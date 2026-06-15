@@ -1,3 +1,8 @@
+export interface P24PsuData {
+  IP: string;
+  userAgent: string;
+}
+
 export interface P24Options {
   merchant_id: string;
   pos_id: string;
@@ -6,11 +11,30 @@ export interface P24Options {
   sandbox: boolean;
   frontend_url: string;
   backend_url: string;
+  debug?: boolean;
+}
+
+export interface P24ServiceOptions extends P24Options {
+  channel?: number;
+  method_id?: number;
+  white_label?: boolean;
 }
 
 export interface P24PaymentIntentOptions {
-  channel: number;
+  channel?: number;
+  method_id?: number;
   description?: string;
+  white_label?: boolean;
+}
+
+export interface P24CardData {
+  means: {
+    referenceNumber: {
+      id: string;
+      securityCode?: string;
+    };
+  };
+  transactionType: string;
 }
 
 export interface P24Transaction {
@@ -24,6 +48,12 @@ export interface P24Transaction {
   urlReturn?: string;
   urlStatus?: string;
   channel?: number;
+  method?: number;
+  regulationAccept?: boolean;
+  cardData?: P24CardData;
+  additional?: {
+    PSU?: P24PsuData;
+  };
 }
 
 export interface P24TransactionResponse {
@@ -83,6 +113,23 @@ export interface P24TransactionBySessionIdResponse {
   responseCode: number;
 }
 
+export interface P24PaymentMethodListItem {
+  id: number;
+  name: string;
+  group: string;
+  subgroup?: string;
+  status?: boolean;
+  imgUrl?: string;
+  mobileImgUrl?: string;
+  mobile?: boolean;
+}
+
+export interface P24PaymentMethodsResponse {
+  data: P24PaymentMethodListItem[];
+  responseCode: number;
+  message?: string;
+}
+
 /**
  * P24 webhook payload structure
  * Received when P24 sends payment status notifications
@@ -100,14 +147,59 @@ export interface P24WebhookPayload {
   sign: string;
 }
 
-/**
- * BLIK API response structure
- */
+export interface P24CardPaymentNotificationPayload {
+  merchantId: number;
+  posId: number;
+  sessionId: string;
+  orderId: number;
+  amount: number;
+  currency: string;
+  refId?: string;
+  bin?: string;
+  mask?: string;
+  cardType?: string;
+  cardDate?: string;
+  hash?: string;
+  sign: string;
+  status?: string;
+}
+
 export interface P24BlikResponse {
   responseCode: number;
   data: {
     orderId: number;
     message: string;
+  };
+}
+
+export interface P24CardChargeResponse {
+  responseCode: number;
+  data: {
+    orderId: number;
+    redirectUrl?: string;
+    message?: string;
+  };
+  message?: string;
+}
+
+export interface P24VisaMobileChargeResponse {
+  responseCode: number;
+  data: {
+    orderId: number;
+    message?: string;
+  };
+  message?: string;
+}
+
+export interface P24CardInfoResponse {
+  responseCode: number;
+  data: {
+    refId: string;
+    bin: string;
+    mask: string;
+    cardType: string;
+    cardDate: string;
+    hash: string;
   };
 }
 
@@ -117,6 +209,11 @@ export interface P24BlikResponse {
 export interface P24BlikChargeByCodeData {
   token: string;
   blikCode: string;
+}
+
+export interface P24VisaMobileChargeData {
+  token: string;
+  phone: string;
 }
 
 /**
@@ -149,8 +246,16 @@ export interface P24RefundResponseData {
   responseCode: number;
 }
 
-export interface BlikOptions extends P24Options {
+export interface BlikOptions extends P24ServiceOptions {
   enable_one_click?: boolean;
+}
+
+export interface CardsOptions extends P24ServiceOptions {
+  card_channel?: number;
+}
+
+export interface VisaMobileOptions extends P24ServiceOptions {
+  visa_mobile_method_id?: number;
 }
 
 export interface BlikTransaction extends P24Transaction {
@@ -164,7 +269,18 @@ export enum PaymentProviderKeys {
   P24_PROVIDER = "p24-provider",
   P24_BLIK = "p24-blik",
   P24_CARDS = "p24-cards",
+  P24_VISA_MOBILE = "p24-visa-mobile",
 }
+
+export const P24_WEBHOOK_ALLOWED_IPS = [
+  "5.252.202.254",
+  "5.252.202.255",
+  "20.215.81.124",
+] as const;
+
+export const DEFAULT_CARD_CHANNEL = 4096;
+export const DEFAULT_BLIK_CHANNEL = 64;
+export const DEFAULT_VISA_MOBILE_METHOD_ID = 198;
 
 export const ErrorCodes = {
   PAYMENT_INTENT_UNEXPECTED_STATE: "payment_intent_unexpected_state",

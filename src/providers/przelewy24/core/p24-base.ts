@@ -3,25 +3,45 @@ import {
   PaymentSessionStatus,
   WebhookActionResult,
   ProviderWebhookPayload,
+  Logger,
 } from "@medusajs/types";
 import {
   AbstractPaymentProvider,
   isDefined,
-  PaymentActions,
 } from "@medusajs/framework/utils";
 import {
   P24Options,
   P24PaymentIntentOptions,
   P24Transaction,
-  P24WebhookPayload,
   P24TransactionBySessionIdResponse,
 } from "../types";
 
 import { P24ApiService } from "../services/p24-api";
 import {
+  fetchTransactionDetailsAndStatus,
+  mapP24StatusToMedusaStatus,
+} from "./p24-transaction-status";
+import { processP24Webhook } from "./p24-webhook";
+import {
   getSmallestUnit,
   getAmountFromSmallestUnit,
 } from "../../../utils/get-smallest-unit";
+import { coerceSandbox } from "../../../utils/coerce-sandbox";
+import {
+  getOrderId,
+  getSessionId,
+  normalizeP24SessionData,
+} from "../../../utils/p24-session-data";
+import {
+  extractMethodIdFromSessionData,
+  resolveP24PaymentMethodMetadata,
+} from "../../../utils/p24-payment-methods";
+import { createP24Logger, redactUnknown } from "../../../utils/p24-logger";
+import { buildLocalizedP24ErrorMessage } from "../../../utils/p24-errors";
+import {
+  getJobErrorMessage,
+  isExpectedStalePaymentJobFailure,
+} from "../../../utils/payment-job-errors";
 
 import {
   InitiatePaymentInput,
@@ -44,10 +64,23 @@ import {
   GetPaymentStatusOutput,
 } from "@medusajs/framework/types";
 
+type P24Container = Record<string, unknown> & {
+  logger?: Logger;
+};
+
+type PaymentSessionQuery = {
+  graph: (config: {
+    entity: string;
+    fields: string[];
+    filters?: Record<string, unknown>;
+  }) => Promise<{ data: Array<{ id: string; data?: Record<string, unknown> }> }>;
+};
+
 abstract class P24Base extends AbstractPaymentProvider<P24Options> {
   protected readonly options_: P24Options;
   protected readonly p24Api: P24ApiService;
-  protected container_: Record<string, unknown>;
+  protected readonly container_: P24Container;
+  protected readonly logger_: ReturnType<typeof createP24Logger>;
 
   static validateOptions(options: P24Options): void {
     if (!isDefined(options.merchant_id)) {
@@ -72,13 +105,23 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
     }
   }
 
-  protected constructor(cradle: Record<string, unknown>, options: P24Options) {
-    // @ts-ignore
-    super(...arguments);
+  protected constructor(cradle: P24Container, options: P24Options) {
+    super(cradle, {
+      ...options,
+      sandbox: coerceSandbox(options.sandbox),
+    });
 
     this.container_ = cradle;
-    this.options_ = options;
-    this.p24Api = new P24ApiService(options);
+    this.options_ = {
+      ...options,
+      sandbox: coerceSandbox(options.sandbox),
+      debug: Boolean(options.debug),
+    };
+    this.p24Api = new P24ApiService(this.options_);
+    this.logger_ = createP24Logger(
+      cradle.logger as Logger | undefined,
+      Boolean(this.options_.debug),
+    );
   }
 
   abstract get paymentIntentOptions(): P24PaymentIntentOptions;
@@ -87,93 +130,208 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
     return this.options_;
   }
 
-  /**
-   * Normalizes payment create parameters for P24 transaction registration.
-   *
-   * This method prepares the common parameters that will be used across all
-   * P24 payment methods (cards, BLIK, etc.) based on the provider-specific options.
-   *
-   * @returns Normalized P24 transaction parameters
-   */
   normalizePaymentCreateParams(): Partial<P24Transaction> {
-    const res = {} as Partial<P24Transaction>;
+    const options = this.paymentIntentOptions;
+    const params: Partial<P24Transaction> = {
+      description: options.description ?? "Payment via Przelewy24",
+    };
 
-    res.description =
-      this.paymentIntentOptions.description ?? "Payment via Przelewy24";
-    res.channel = this.paymentIntentOptions.channel;
+    if (options.channel != null && options.channel > 0) {
+      params.channel = options.channel;
+    }
 
-    return res;
+    if (options.method_id != null) {
+      params.method = options.method_id;
+    }
+
+    return params;
   }
 
-  /**
-   * Initiates a new payment with Przelewy24.
-   *
-   * This method creates a payment session with P24 by registering a transaction.
-   * It uses provider-specific options (channel, method) from the concrete implementations
-   * and normalizes common parameters for all P24 payment methods.
-   *
-   * @param input - The payment initiation input containing amount, currency, and context
-   * @returns The initiated payment details with session ID and redirect URL
-   */
-  async initiatePayment({
-    currency_code,
-    amount,
-    data,
-    context,
-  }: InitiatePaymentInput): Promise<InitiatePaymentOutput> {
-    try {
-      console.log(
-        `Initiating P24 payment - Amount: ${amount} ${currency_code}`,
-      );
-      console.log(`Context:`, context);
-      console.log("data: ", data);
+  protected buildTransactionRequest(
+    input: InitiatePaymentInput,
+    sessionId: string,
+  ): P24Transaction {
+    const { currency_code, amount, data, context } = input;
+    const normalizedParams = this.normalizePaymentCreateParams();
 
-      const normalizedParams = this.normalizePaymentCreateParams();
+    const customerEmail =
+      context?.customer?.email ||
+      (typeof data?.email === "string" && data.email.trim().length > 0
+        ? data.email.trim()
+        : undefined) ||
+      ((data?.customer as Record<string, unknown>)?.email as string) ||
+      "customer@example.com";
 
-      const customerEmail =
-        context?.customer?.email ||
-        ((data?.customer as Record<string, unknown>)?.email as string) ||
-        "customer@example.com";
+    const country = (data?.country as string)?.toUpperCase() || "PL";
+    const language = (data?.language as string)?.toLowerCase() || "pl";
 
-      const country = (data?.country as string)?.toUpperCase() || "PL";
-      const language = (data?.language as string)?.toLowerCase() || "pl";
+    const urlReturn =
+      typeof data?.return_url === "string" && data.return_url.trim().length
+        ? data.return_url
+        : `${this.options_.frontend_url}/payment/return?cart_id=${data?.cart_id ?? ""}`;
 
-      console.log(`Using country: ${country}, language: ${language}`);
+    const psu = data?.psu as
+      | {
+          IP?: string;
+          userAgent?: string;
+        }
+      | undefined;
 
-      // Prefer data.return_url (non-empty string); otherwise fallback to default
-      const urlReturn =
-        typeof data?.return_url === "string" && data.return_url.trim().length
-          ? data.return_url
-          : `${this.options_.frontend_url}/payment/return?cart_id=${data?.cart_id ?? ""}`;
+    const regulationAccept =
+      data?.regulation_accept === true || data?.regulationAccept === true;
 
-      const transactionRequest: P24Transaction = {
-        sessionId: context?.idempotency_key as string,
-        amount: getSmallestUnit(Number(amount), currency_code),
-        country: country,
-        language: language,
-        currency: currency_code.toUpperCase(),
-        description:
-          normalizedParams.description || `Payment ${context?.idempotency_key}`,
-        email: customerEmail,
-        channel: normalizedParams.channel,
-        urlReturn,
-        urlStatus: `${
-          this.options_.backend_url
-        }/hooks/payment/${this.getProviderKey()}_przelewy24`,
+    const cardRefId =
+      typeof data?.card_ref_id === "string" ? data.card_ref_id : undefined;
+
+    const transactionRequest: P24Transaction = {
+      sessionId,
+      amount: getSmallestUnit(Number(amount), currency_code),
+      country,
+      language,
+      currency: currency_code.toUpperCase(),
+      description:
+        normalizedParams.description || `Payment ${context?.idempotency_key}`,
+      email: customerEmail,
+      channel: normalizedParams.channel,
+      method: normalizedParams.method,
+      urlReturn,
+      urlStatus: `${this.options_.backend_url}/hooks/payment/${this.getProviderKey()}_przelewy24`,
+      ...(regulationAccept ? { regulationAccept: true } : {}),
+    };
+
+    if (cardRefId) {
+      transactionRequest.cardData = {
+        means: {
+          referenceNumber: { id: cardRefId },
+        },
+        transactionType: "standard",
       };
+    }
 
-      console.log(
-        `Registering P24 transaction with session ID: ${transactionRequest.sessionId}`,
+    if (psu?.IP && psu?.userAgent) {
+      transactionRequest.additional = {
+        PSU: {
+          IP: psu.IP,
+          userAgent: psu.userAgent,
+        },
+      };
+    }
+
+    return transactionRequest;
+  }
+
+  protected async findMedusaPaymentSessionId(
+    p24SessionId: string,
+  ): Promise<string> {
+    const query = this.container_.query as PaymentSessionQuery | undefined;
+
+    if (!query) {
+      return p24SessionId;
+    }
+
+    const byId = await query.graph({
+      entity: "payment_session",
+      fields: ["id", "data"],
+      filters: { id: p24SessionId },
+    });
+
+    if (byId.data?.[0]?.id) {
+      return byId.data[0].id;
+    }
+
+    const providerPrefix = `pp_${this.getProviderKey()}`;
+    const sessions = await query.graph({
+      entity: "payment_session",
+      fields: ["id", "data"],
+      filters: {
+        provider_id: { $like: `${providerPrefix}%` },
+      },
+    });
+
+    const matched = sessions.data?.find((session) => {
+      const sessionData = session.data ?? {};
+      return (
+        sessionData.session_id === p24SessionId ||
+        sessionData.sessionId === p24SessionId
       );
+    });
+
+    return matched?.id ?? p24SessionId;
+  }
+
+  protected async enrichPaymentMethodFields(
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const methodId = extractMethodIdFromSessionData(data);
+
+    if (!methodId) {
+      return data;
+    }
+
+    if (
+      data.paymentMethod === methodId &&
+      typeof data.paymentMethodName === "string" &&
+      data.paymentMethodName.length > 0 &&
+      typeof data.paymentMethodGroup === "string" &&
+      data.paymentMethodGroup.length > 0
+    ) {
+      return data;
+    }
+
+    const currency = String(data.currency_code ?? data.currency ?? "PLN");
+    const lang = String(data.language ?? "pl").toLowerCase();
+    const amountGrosze =
+      typeof data.amount_grosze === "number" && Number.isFinite(data.amount_grosze)
+        ? Math.trunc(data.amount_grosze)
+        : typeof data.amount === "number" && Number.isFinite(data.amount)
+          ? getSmallestUnit(data.amount, currency)
+          : 0;
+
+    const metadata = await resolveP24PaymentMethodMetadata(this.p24Api, {
+      methodId,
+      lang,
+      amountGrosze,
+      currency,
+      providerKey: this.getProviderKey(),
+    });
+
+    return {
+      ...data,
+      ...metadata,
+      method_id: methodId,
+      methodId,
+    };
+  }
+
+  async initiatePayment(input: InitiatePaymentInput): Promise<InitiatePaymentOutput> {
+    const { currency_code, amount, context, data } = input;
+
+    try {
+      const sessionId = context?.idempotency_key as string;
+      const p24SessionId = (data?.p24_session_id as string) || sessionId;
+
+      if (!sessionId) {
+        throw this.buildError(
+          "Missing idempotency key for P24 transaction",
+          new Error("idempotency_key is required"),
+        );
+      }
+
+      this.logger_.debug(
+        `Initiating P24 payment amount=${amount} ${currency_code} session=${sessionId} context=${JSON.stringify(redactUnknown(context))}`,
+      );
+
+      const transactionRequest = this.buildTransactionRequest(input, p24SessionId);
 
       const sessionData =
         await this.p24Api.registerTransaction(transactionRequest);
 
-      console.log(`P24 transaction response:`, sessionData);
-
       if (sessionData.responseCode !== 0) {
         throw this.buildError(
-          "Failed to register P24 transaction",
+          buildLocalizedP24ErrorMessage(
+            sessionData,
+            "Failed to register P24 transaction",
+          ),
           new Error(
             `P24 API error: ${sessionData.responseCode} - ${
               sessionData.message || "Unknown error"
@@ -182,62 +340,51 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
         );
       }
 
-      console.log(
-        `P24 payment ${transactionRequest.sessionId} successfully initiated`,
+      const isWhiteLabel = Boolean(this.paymentIntentOptions.white_label);
+      const redirectUrl = `${this.p24Api.getBaseRedirectURL()}/${sessionData.data.token}`;
+
+      const normalizedData = await this.enrichPaymentMethodFields(
+        normalizeP24SessionData({
+          session_id: transactionRequest.sessionId,
+          medusa_payment_session_id: sessionId,
+          token: sessionData.data.token,
+          amount: Number(amount),
+          amount_grosze: transactionRequest.amount,
+          currency: currency_code,
+          currency_code,
+          description: transactionRequest.description,
+          email: transactionRequest.email,
+          country: transactionRequest.country,
+          language: transactionRequest.language,
+          channel: transactionRequest.channel,
+          method_id: transactionRequest.method,
+          ...(transactionRequest.method != null
+            ? { paymentMethod: transactionRequest.method }
+            : {}),
+          white_label: isWhiteLabel,
+          ...(isWhiteLabel ? {} : { redirect_url: redirectUrl }),
+          responseCode: sessionData.responseCode,
+        }),
       );
+
+      this.logger_.info(`P24 payment initiated for session ${sessionId}`);
 
       return {
         id: transactionRequest.sessionId,
-        data: {
-          session_id: transactionRequest.sessionId,
-          token: sessionData.data.token,
-          redirect_url: `${this.p24Api.getBaseRedirectURL()}/${
-            sessionData.data.token
-          }`,
-          amount: amount,
-          currency: currency_code,
-          description: transactionRequest.description,
-          email: transactionRequest.email,
-          country: country,
-          language: language,
-          channel: transactionRequest.channel,
-          ...sessionData,
-        } as Record<string, unknown>,
+        data: normalizedData,
       };
     } catch (error) {
-      console.error(`Error initiating P24 payment: ${error.message}`);
+      this.logger_.error(
+        `Error initiating P24 payment: ${(error as Error).message}`,
+      );
       throw error;
     }
   }
 
-  /**
-   * Authorizes a payment session using the third-party payment provider.
-   *
-   * During checkout, the customer may need to perform actions required by the payment provider,
-   * such as entering their card details or confirming the payment. Once that is done, the
-   * customer can place their order.
-   *
-   * During cart-completion before placing the order, this method is used to authorize the
-   * cart's payment session with the third-party payment provider. The payment can later be
-   * captured using the capturePayment method.
-   *
-   * For P24, this method validates the payment status by fetching transaction details
-   * from P24 and mapping P24 statuses (0-3) to Medusa payment statuses:
-   * - 0: pending
-   * - 1: authorized
-   * - 2: captured
-   * - 3: canceled
-   *
-   * @param input - The authorize payment input containing the payment data
-   * @returns The payment data with authorization status
-   */
   async authorizePayment(
     input: AuthorizePaymentInput,
   ): Promise<AuthorizePaymentOutput> {
-    console.log("----- REACHED TO THE AUTHORIZE PAYMENT -----");
-    console.log("input from authorize: ", input);
-
-    const sessionId = input.data?.session_id as string;
+    const sessionId = getSessionId(input.data);
 
     if (!sessionId) {
       throw this.buildError(
@@ -250,24 +397,22 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
       const { transactionDetails, p24Status, medusaStatus } =
         await this.getTransactionDetailsAndStatus(sessionId);
 
-      console.log(
-        "transactionDetails (in authorize payment): ",
-        transactionDetails,
-      );
-
-      if (!["authorized", "captured", "pending"].includes(medusaStatus)) {
+      if (!["authorized", "captured"].includes(medusaStatus)) {
         throw this.buildError(
           `Payment is not in a valid state for authorization: current status is ${medusaStatus}`,
           new Error(`Invalid payment status: ${medusaStatus}`),
         );
       }
 
-      // P24 API returns amounts in smallest unit; convert to normal for Medusa
-      const data = {
-        ...input.data,
-        ...transactionDetails.data,
-        p24_status: p24Status,
-      } as Record<string, unknown>;
+      let data = await this.enrichPaymentMethodFields(
+        normalizeP24SessionData({
+          ...input.data,
+          ...transactionDetails.data,
+          amount_grosze: transactionDetails.data.amount,
+          p24_status: p24Status,
+          order_id: transactionDetails.data.orderId,
+        }),
+      );
 
       const currencyCode =
         (data.currency as string) || (input.data?.currency_code as string);
@@ -298,37 +443,22 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
         status: medusaStatus,
       };
     } catch (error) {
-      console.error(`Error authorizing payment ${sessionId}: ${error.message}`);
+      this.logger_.error(
+        `Error authorizing payment ${sessionId}: ${(error as Error).message}`,
+      );
       throw error;
     }
   }
 
-  /**
-   * Captures a payment using the third-party provider.
-   *
-   * This method provides manual payment capture capability for admin users.
-   * In normal operation, payments are automatically verified and captured via webhook
-   * processing in getWebhookActionAndData. This method serves as a backup option.
-   *
-   * According to P24 documentation, transaction/verify is required to confirm the payment
-   * and transfer the amount to the merchant. Without verification, the amount stays as
-   * an advance payment at the customer's disposal.
-   *
-   * @param input - The capture payment input containing the payment data
-   * @returns The payment data with capture confirmation
-   */
   async capturePayment(
     input: CapturePaymentInput,
   ): Promise<CapturePaymentOutput> {
-    console.log("----- REACHED TO THE CAPTURE PAYMENT -----");
-    console.log("input from capture: ", input);
-
-    const sessionId = input.data?.sessionId as string;
+    const sessionId = getSessionId(input.data);
     const amount = input.data?.amount as number;
-    const currency = input.data?.currency as string;
-    const orderId = input.data?.orderId as number;
+    const currency = (input.data?.currency as string) || (input.data?.currency_code as string);
+    const orderId = getOrderId(input.data);
 
-    if (!sessionId || !amount || !currency || !orderId) {
+    if (!sessionId || amount == null || !currency || orderId == null) {
       throw this.buildError(
         "Missing required data for payment capture",
         new Error("Session ID, amount, currency, and order ID are required"),
@@ -336,9 +466,6 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
     }
 
     try {
-      console.log(`Capturing payment ${sessionId} with order ID ${orderId}...`);
-
-      // Call transaction/verify to confirm and capture the payment
       const verification = await this.p24Api.verifyTransaction(
         sessionId,
         getSmallestUnit(amount, currency),
@@ -358,77 +485,52 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
         );
       }
 
-      console.log(`Payment ${sessionId} successfully captured`);
-
       return {
-        data: {
-          ...input.data,
-          status: "captured",
-          captured_at: new Date().toISOString(),
-          order_id: orderId,
-          capture_verified: true,
-        },
+        data: await this.enrichPaymentMethodFields(
+          normalizeP24SessionData({
+            ...input.data,
+            status: "captured",
+            captured_at: new Date().toISOString(),
+            order_id: orderId,
+            capture_verified: true,
+          }),
+        ),
       };
     } catch (error) {
-      console.error(`Error capturing payment ${sessionId}: ${error.message}`);
+      const message = getJobErrorMessage(error);
+
+      if (isExpectedStalePaymentJobFailure(error)) {
+        this.logger_.debug(
+          `Skipping stale payment capture for ${sessionId}: ${message}`,
+        );
+      } else {
+        this.logger_.error(
+          `Error capturing payment ${sessionId}: ${message}`,
+        );
+      }
+
       throw error;
     }
   }
 
-  /**
-   * Deletes a payment session in the third-party payment provider.
-   *
-   * P24 doesn't support programmatic deletion of payment sessions.
-   * Payment sessions expire automatically after 15 minutes.
-   *
-   * When a customer chooses a payment method during checkout, then chooses a different one,
-   * this method is triggered to delete the previous payment session.
-   *
-   * @param input - The delete payment input containing the payment data
-   * @returns The same payment data (no deletion performed)
-   */
   async deletePayment(input: DeletePaymentInput): Promise<DeletePaymentOutput> {
     return {
       data: input.data,
     };
   }
 
-  /**
-   * Cancels a payment in the third-party payment provider.
-   *
-   * P24 doesn't support programmatic cancellation of payments.
-   * Payments can only be canceled through the P24 merchant panel.
-   *
-   * This method is used when the admin user cancels an order.
-   * The order can only be canceled if the payment is not captured yet.
-   *
-   * @param input - The cancel payment input containing the payment data
-   * @returns The same payment data (no cancellation performed)
-   */
   async cancelPayment(input: CancelPaymentInput): Promise<CancelPaymentOutput> {
     return {
       data: input.data,
     };
   }
 
-  /**
-   * Refunds an amount using the P24 payment provider.
-   *
-   * This method is triggered when the admin user refunds a payment of an order.
-   * It creates a refund request to P24 using the transaction/refund endpoint.
-   *
-   * The method uses the session ID and order ID from the payment data to identify
-   * the transaction to refund, and generates a unique UUID for tracking the refund.
-   *
-   * @param input - The input to refund the payment containing amount and payment data
-   * @returns The payment data with refund information and status
-   */
   async refundPayment(input: RefundPaymentInput): Promise<RefundPaymentOutput> {
     const { data: paymentData, amount: refundAmount, context } = input;
-    const sessionId = paymentData?.session_id as string;
-    const orderId = paymentData?.orderId as number;
+    const sessionId = getSessionId(paymentData);
+    const orderId = getOrderId(paymentData);
 
-    if (!sessionId || !orderId) {
+    if (!sessionId || orderId == null) {
       throw this.buildError(
         "No session ID or order ID provided while refunding payment",
         new Error("Missing session ID or order ID"),
@@ -437,27 +539,23 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
 
     try {
       const refundsUuid = crypto.randomUUID();
-
       const requestId = context?.idempotency_key || `refund-${Date.now()}`;
-
       const currencyCode = (paymentData?.currency_code as string) || "pln";
 
       const refundData = {
-        requestId: requestId,
+        requestId,
         refunds: [
           {
-            orderId: orderId,
-            sessionId: sessionId,
+            orderId,
+            sessionId,
             amount: getSmallestUnit(Number(refundAmount), currencyCode),
             description: `Refund for order ${sessionId}`,
           },
         ],
-        refundsUuid: refundsUuid,
+        refundsUuid,
       };
 
       const refundResult = await this.p24Api.processRefund(refundData);
-
-      // Check if refund was successful
       const refundStatus = refundResult.data[0]?.status;
       const refundMessage = refundResult.data[0]?.message;
 
@@ -472,7 +570,6 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
         );
       }
 
-      // P24 refund response amounts are in smallest unit; convert for Medusa
       const p24RefundsNormal = Array.isArray(refundResult.data)
         ? refundResult.data.map((item: Record<string, unknown>) => {
             const out = { ...item };
@@ -494,7 +591,7 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
         : refundResult.data;
 
       return {
-        data: {
+        data: normalizeP24SessionData({
           ...paymentData,
           refund_amount: refundAmount,
           refunded_at: new Date().toISOString(),
@@ -505,7 +602,7 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
           p24_refunds: p24RefundsNormal,
           p24_response_code: refundResult.responseCode,
           status: "refund_requested",
-        },
+        }),
       };
     } catch (e) {
       throw this.buildError("An error occurred in refundPayment", e);
@@ -516,11 +613,8 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
     input: RetrievePaymentInput,
   ): Promise<RetrievePaymentOutput> {
     try {
-      const { data: paymentSessionData } = input;
-
-      // Note: This would need the full transaction data to verify
       return {
-        data: paymentSessionData,
+        data: normalizeP24SessionData(input.data),
       };
     } catch (e) {
       throw this.buildError("An error occurred in retrievePayment", e);
@@ -528,262 +622,127 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
   }
 
   async updatePayment(input: UpdatePaymentInput): Promise<UpdatePaymentOutput> {
-    const { data, amount } = input;
+    const { data, amount, currency_code, context } = input;
     const amountNumeric = Number(amount);
+    const currentAmount = Number(data?.amount);
 
-    if (data?.amount === amountNumeric) {
-      return { data };
+    if (Number.isFinite(currentAmount) && currentAmount === amountNumeric) {
+      return { data: normalizeP24SessionData(data) };
     }
 
-    // P24 doesn't support updating payment amounts after creation
-    // We need to create a new payment session
-    throw this.buildError(
-      "P24 doesn't support updating payment amounts. Please create a new payment session.",
-      new Error("Update not supported"),
-    );
+    const baseSessionId =
+      (context?.idempotency_key as string | undefined) || getSessionId(data);
+
+    if (!baseSessionId) {
+      throw this.buildError(
+        "Cannot update P24 payment without session id",
+        new Error("Missing session id"),
+      );
+    }
+
+    const newP24SessionId = `${baseSessionId}-${crypto.randomUUID()}`;
+
+    const initiated = await this.initiatePayment({
+      amount,
+      currency_code,
+      context: {
+        ...context,
+        idempotency_key: baseSessionId,
+      },
+      data: {
+        ...data,
+        amount: amountNumeric,
+        medusa_payment_session_id: baseSessionId,
+        p24_session_id: newP24SessionId,
+      },
+    });
+
+    return {
+      data: normalizeP24SessionData({
+        ...data,
+        ...initiated.data,
+        session_id: initiated.data?.session_id,
+        medusa_payment_session_id: baseSessionId,
+        amount: amountNumeric,
+      }),
+    };
   }
 
-  /**
-   * Processes webhook data from P24
-   *
-   * @param webhookData - The webhook payload from P24
-   * @returns The action and data to be processed
-   */
   async getWebhookActionAndData(
     webhookData: ProviderWebhookPayload["payload"],
   ): Promise<WebhookActionResult> {
-    const { data } = webhookData;
-
-    try {
-      const payload = data as unknown as P24WebhookPayload;
-      const { sessionId, orderId, amount, currency, sign } = payload;
-
-      console.log("----------- P24 WEBHOOK RECEIVED -----------");
-      console.log("Session ID:", sessionId);
-      console.log("Order ID:", orderId);
-      console.log("Amount:", amount);
-      console.log("Currency:", currency);
-
-      if (!this.p24Api.verifyWebhookSignature(payload, sign)) {
-        console.error(`Invalid webhook signature for session ${sessionId}`);
-        return { action: PaymentActions.NOT_SUPPORTED };
-      }
-
-      if (typeof currency !== "string" || !currency.trim()) {
-        console.error(
-          `Missing or invalid currency in webhook payload for session ${sessionId}`,
-        );
-        return { action: PaymentActions.NOT_SUPPORTED };
-      }
-
-      const amountNum = Number(amount);
-      if (
-        amount == null ||
-        !Number.isFinite(amountNum) ||
-        amountNum < 0
-      ) {
-        console.error(
-          `Missing or invalid amount in webhook payload for session ${sessionId}`,
-        );
-        return { action: PaymentActions.NOT_SUPPORTED };
-      }
-
-      // P24 webhook amount is in smallest unit; convert to normal for Medusa
-      const amountNormal = getAmountFromSmallestUnit(amount, currency);
-      console.log("Verifying transaction with P24...");
-      const verification = await this.p24Api.verifyTransaction(
-        sessionId,
-        amount,
-        currency,
-        orderId,
-      );
-
-      if (
-        verification.responseCode !== 0 ||
-        verification.data.status !== "success"
-      ) {
-        console.error(
-          `Transaction verification failed - responseCode: ${verification.responseCode}, status: ${verification.data.status}`,
-        );
-        return {
-          action: PaymentActions.FAILED,
-          data: {
-            session_id: sessionId,
-            amount: amountNormal,
-          },
-        };
-      }
-
-      console.log("Transaction verified successfully");
-
-      const { medusaStatus } =
-        await this.getTransactionDetailsAndStatus(sessionId);
-
-      const webhookData = {
-        session_id: sessionId,
-        amount: amountNormal,
-      };
-
-      switch (medusaStatus) {
-        case "authorized":
-          return {
-            action: PaymentActions.AUTHORIZED,
-            data: webhookData,
-          };
-        case "captured":
-          return {
-            action: PaymentActions.SUCCESSFUL,
-            data: webhookData,
-          };
-        case "pending":
-          return {
-            action: PaymentActions.PENDING,
-            data: webhookData,
-          };
-        case "canceled":
-          return {
-            action: PaymentActions.CANCELED,
-            data: webhookData,
-          };
-        case "error":
-          return {
-            action: PaymentActions.FAILED,
-            data: webhookData,
-          };
-        default:
-          return {
-            action: PaymentActions.NOT_SUPPORTED,
-            data: webhookData,
-          };
-      }
-    } catch (error) {
-      console.error("Error processing P24 webhook:", error);
-
-      // Try to extract basic information even if there's an error
-      try {
-        const fallbackPayload =
-          webhookData.data as unknown as P24WebhookPayload;
-        const { sessionId, amount, currency } = fallbackPayload;
-
-        const amountNumFallback = Number(amount);
-        if (
-          sessionId &&
-          amount != null &&
-          Number.isFinite(amountNumFallback) &&
-          amountNumFallback >= 0 &&
-          typeof currency === "string" &&
-          currency.trim()
-        ) {
-          const amountNormal = getAmountFromSmallestUnit(amount, currency);
-          return {
-            action: PaymentActions.FAILED,
-            data: {
-              session_id: sessionId,
-              amount: amountNormal,
-            },
-          };
-        }
-      } catch (fallbackError) {
-        console.error("Failed to extract fallback data:", fallbackError);
-      }
-
-      throw error;
-    }
+    return processP24Webhook(
+      {
+        p24Api: this.p24Api,
+        logger: this.logger_,
+        findMedusaPaymentSessionId: (p24SessionId) =>
+          this.findMedusaPaymentSessionId(p24SessionId),
+        buildError: (message, error) => this.buildError(message, error),
+      },
+      webhookData,
+    );
   }
 
-  /**
-   * Gets the payment status from P24 based on the session ID.
-   * This method fetches the current status from P24 and maps it to Medusa's format.
-   *
-   * @param input - The get payment status input containing session data
-   * @returns The current payment status from P24
-   */
   async getPaymentStatus(
     input: GetPaymentStatusInput,
   ): Promise<GetPaymentStatusOutput> {
     const sessionId = input.context?.idempotency_key;
 
     if (!sessionId) {
-      console.warn(
+      this.logger_.warn(
         "No session ID provided for getPaymentStatus, returning pending",
       );
       return { status: "pending" as PaymentSessionStatus };
     }
-
-    console.log(`Fetching payment status for session: ${sessionId}`);
 
     try {
       const { medusaStatus } =
         await this.getTransactionDetailsAndStatus(sessionId);
       return { status: medusaStatus };
     } catch (error) {
-      console.error(
-        `Error getting payment status for session ${sessionId}: ${error.message}`,
+      this.logger_.error(
+        `Error getting payment status for session ${sessionId}: ${(error as Error).message}`,
       );
       throw error;
     }
   }
 
-  /**
-   * Gets transaction details and maps status from P24
-   * This is a reusable method to avoid code duplication across payment methods
-   *
-   * @param sessionId - The P24 session ID
-   * @returns Object containing transaction details and mapped Medusa status
-   */
+  async queryTransactionStatus(sessionId: string) {
+    return this.getTransactionDetailsAndStatus(sessionId);
+  }
+
   protected async getTransactionDetailsAndStatus(sessionId: string): Promise<{
     transactionDetails: P24TransactionBySessionIdResponse;
     p24Status: number;
     medusaStatus: PaymentSessionStatus;
   }> {
-    const transactionDetails =
-      await this.p24Api.getTransactionBySessionId(sessionId);
-
-    if (transactionDetails.responseCode !== 0) {
-      throw this.buildError(
-        "Failed to retrieve transaction details",
-        new Error(`P24 API error: ${transactionDetails.responseCode}`),
-      );
-    }
-
-    const p24Status = parseInt(transactionDetails.data.status);
-    const medusaStatus = this.mapP24StatusToMedusaStatus(p24Status);
-
-    console.log(`P24 Status: ${p24Status} -> Medusa Status: ${medusaStatus}`);
-
-    return {
-      transactionDetails,
-      p24Status,
-      medusaStatus,
-    };
+    return fetchTransactionDetailsAndStatus(
+      {
+        p24Api: this.p24Api,
+        logger: this.logger_,
+        buildError: (message, error) => this.buildError(message, error),
+      },
+      sessionId,
+    );
   }
 
   protected abstract getProviderKey(): string;
 
-  /**
-   * Maps P24 transaction status to Medusa payment status
-   * P24 statuses: 0 - no payment, 1 - advance payment, 2 - payment made, 3 - payment returned
-   * Medusa statuses: "authorized" | "captured" | "pending" | "requires_more" | "error" | "canceled"
-   */
   protected mapP24StatusToMedusaStatus(
     p24Status: number,
   ): PaymentSessionStatus {
-    switch (p24Status) {
-      case 0: // no payment
-        return "pending";
-      case 1: // advance payment
-        return "authorized";
-      case 2: // payment made
-        return "captured";
-      case 3: // payment returned
-        return "canceled";
-      default:
-        return "error";
-    }
+    return mapP24StatusToMedusaStatus(p24Status);
   }
 
-  protected buildError(message: string, error?: any): Error {
-    return new Error(`${message}: ${error?.message || "Unknown error"}`.trim());
+  protected buildError(message: string, error?: unknown): Error {
+    const suffix =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "Unknown error";
+
+    return new Error(`${message}: ${suffix}`.trim());
   }
 }
 

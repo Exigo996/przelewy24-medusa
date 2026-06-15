@@ -14,7 +14,6 @@ class P24ProviderService extends P24Base {
 
   get paymentIntentOptions(): P24PaymentIntentOptions {
     return {
-      channel: 0, // All channels - shows all available payment methods
       description: "Payment via Przelewy24 - All payment methods",
     };
   }

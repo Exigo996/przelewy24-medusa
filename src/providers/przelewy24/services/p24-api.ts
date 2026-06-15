@@ -1,35 +1,64 @@
 import crypto from "crypto";
 import {
+  P24BlikChargeByCodeData,
+  P24CardChargeResponse,
+  P24CardInfoResponse,
+  P24CardPaymentNotificationPayload,
   P24Options,
-  P24Transaction,
-  P24TransactionResponse,
-  P24VerificationResponse,
-  P24TransactionBySessionIdResponse,
-  P24SignatureData,
-  P24SignatureVerificationData,
-  P24WebhookPayload,
+  P24PaymentMethodsResponse,
   P24RefundRequestData,
   P24RefundResponseData,
+  P24SignatureData,
+  P24SignatureVerificationData,
+  P24Transaction,
+  P24TransactionBySessionIdResponse,
+  P24TransactionResponse,
+  P24VerificationResponse,
+  P24VisaMobileChargeData,
+  P24VisaMobileChargeResponse,
+  P24WebhookPayload,
+  P24_WEBHOOK_ALLOWED_IPS,
 } from "../types";
+import { coerceSandbox } from "../../../utils/coerce-sandbox";
+import { buildLocalizedP24ErrorMessage } from "../../../utils/p24-errors";
+
+export class P24ApiError extends Error {
+  readonly responseCode?: number;
+  readonly payload?: unknown;
+
+  constructor(message: string, responseCode?: number, payload?: unknown) {
+    super(message);
+    this.name = "P24ApiError";
+    this.responseCode = responseCode;
+    this.payload = payload;
+  }
+}
 
 export class P24ApiService {
   private readonly options: P24Options;
   private readonly baseURL: string;
 
   constructor(options: P24Options) {
-    this.options = options;
-    this.baseURL = options.sandbox
+    this.options = {
+      ...options,
+      sandbox: coerceSandbox(options.sandbox),
+    };
+    this.baseURL = this.options.sandbox
       ? "https://sandbox.przelewy24.pl/api/v1"
       : "https://secure.przelewy24.pl/api/v1";
+  }
+
+  getBaseURL(): string {
+    return this.baseURL;
   }
 
   /**
    * Register a new transaction with P24
    */
   async registerTransaction(
-    data: P24Transaction
+    data: P24Transaction,
   ): Promise<P24TransactionResponse> {
-    const requestData = {
+    const requestData: Record<string, unknown> = {
       merchantId: parseInt(this.options.merchant_id),
       posId: parseInt(this.options.pos_id),
       sessionId: data.sessionId,
@@ -50,6 +79,26 @@ export class P24ApiService {
       }),
     };
 
+    if (data.channel != null && data.channel > 0) {
+      requestData.channel = data.channel;
+    }
+
+    if (data.method != null) {
+      requestData.method = data.method;
+    }
+
+    if (data.regulationAccept === true) {
+      requestData.regulationAccept = true;
+    }
+
+    if (data.cardData) {
+      requestData.cardData = data.cardData;
+    }
+
+    if (data.additional) {
+      requestData.additional = data.additional;
+    }
+
     return this.makeRequest("/transaction/register", "POST", requestData);
   }
 
@@ -60,7 +109,7 @@ export class P24ApiService {
     sessionId: string,
     amount: number,
     currency: string,
-    orderId: number
+    orderId: number,
   ): Promise<P24VerificationResponse> {
     const data = {
       merchantId: parseInt(this.options.merchant_id),
@@ -82,10 +131,29 @@ export class P24ApiService {
   }
 
   /**
+   * List available payment methods for amount/currency.
+   */
+  async getPaymentMethods(
+    lang: string,
+    amountGrosze: number,
+    currency: string,
+  ): Promise<P24PaymentMethodsResponse> {
+    const params = new URLSearchParams({
+      amount: String(Math.max(0, Math.trunc(amountGrosze))),
+      currency: currency.toUpperCase(),
+    });
+
+    return this.makeRequest(
+      `/payment/methods/${encodeURIComponent(lang.toLowerCase())}?${params.toString()}`,
+      "GET",
+    );
+  }
+
+  /**
    * Get transaction details by session ID
    */
   async getTransactionBySessionId(
-    sessionId: string
+    sessionId: string,
   ): Promise<P24TransactionBySessionIdResponse> {
     const endpoint = `/transaction/by/sessionId/${sessionId}`;
     return this.makeRequest(endpoint, "GET");
@@ -95,29 +163,54 @@ export class P24ApiService {
    * Process a refund
    */
   async processRefund(
-    refundData: P24RefundRequestData
+    refundData: P24RefundRequestData,
   ): Promise<P24RefundResponseData> {
     return this.makeRequest("/transaction/refund", "POST", refundData);
   }
 
   /**
    * Charge payment using BLIK code
-   * This is the main BLIK payment method
    */
-  async chargeBlikByCode(data: {
-    token: string;
-    blikCode: string;
-  }): Promise<any> {
-    const requestData = {
+  async chargeBlikByCode(
+    data: P24BlikChargeByCodeData,
+  ): Promise<P24TransactionResponse> {
+    return this.makeRequest("/paymentMethod/blik/chargeByCode", "POST", {
       token: data.token,
       blikCode: data.blikCode,
-    };
+    });
+  }
 
-    return this.makeRequest(
-      "/paymentMethod/blik/chargeByCode",
-      "POST",
-      requestData
-    );
+  /**
+   * Charge card with 3DS (white-label iframe flow)
+   */
+  async chargeCardWith3ds(token: string): Promise<P24CardChargeResponse> {
+    return this.makeRequest("/card/chargeWith3ds", "POST", { token });
+  }
+
+  /**
+   * Charge card without 3DS redirect
+   */
+  async chargeCard(token: string): Promise<P24CardChargeResponse> {
+    return this.makeRequest("/card/charge", "POST", { token });
+  }
+
+  /**
+   * Get card metadata for an order
+   */
+  async getCardInfo(orderId: number): Promise<P24CardInfoResponse> {
+    return this.makeRequest(`/card/info/${orderId}`, "GET");
+  }
+
+  /**
+   * Charge Visa Mobile using phone number (white-label)
+   */
+  async chargeVisaMobile(
+    data: P24VisaMobileChargeData,
+  ): Promise<P24VisaMobileChargeResponse> {
+    return this.makeRequest("/paymentMethod/visaMobile/charge", "POST", {
+      token: data.token,
+      phone: data.phone,
+    });
   }
 
   /**
@@ -126,13 +219,12 @@ export class P24ApiService {
   private async makeRequest(
     endpoint: string,
     method: string,
-    data?: any
+    data?: unknown,
   ): Promise<any> {
     const url = `${this.baseURL}${endpoint}`;
 
-    // P24 uses Basic authentication: pos_id as username, api_key as password
     const credentials = Buffer.from(
-      `${this.options.pos_id}:${this.options.api_key}`
+      `${this.options.pos_id}:${this.options.api_key}`,
     ).toString("base64");
 
     const response = await fetch(url, {
@@ -144,13 +236,29 @@ export class P24ApiService {
       body: data ? JSON.stringify(data) : undefined,
     });
 
+    const responseText = await response.text();
+    let parsed: unknown = {};
+
+    if (responseText) {
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        parsed = { message: responseText };
+      }
+    }
+
     if (!response.ok) {
-      throw new Error(
-        `P24 API request failed: ${response.status} ${response.statusText}`
+      throw new P24ApiError(
+        buildLocalizedP24ErrorMessage(
+          parsed,
+          `P24 API request failed: ${response.status} ${response.statusText}`,
+        ),
+        (parsed as { responseCode?: number })?.responseCode,
+        parsed,
       );
     }
 
-    return response.json();
+    return parsed;
   }
 
   /**
@@ -174,7 +282,7 @@ export class P24ApiService {
    */
   verifyWebhookSignature(
     payload: P24WebhookPayload,
-    receivedSign: string
+    receivedSign: string,
   ): boolean {
     const signData = {
       merchantId: parseInt(this.options.merchant_id),
@@ -189,13 +297,68 @@ export class P24ApiService {
       crc: this.options.crc,
     };
 
-    const jsonString = JSON.stringify(signData, null, 0).replace(/\\\//g, "/");
-    const expectedSign = crypto
-      .createHash("sha384")
-      .update(jsonString, "utf8")
-      .digest("hex");
-
+    const expectedSign = this.hashSignaturePayload(signData);
     return expectedSign === receivedSign;
+  }
+
+  verifyCardPaymentNotificationSignature(
+    payload: P24CardPaymentNotificationPayload,
+    receivedSign: string,
+    isFailure = false,
+  ): boolean {
+    const signData = isFailure
+      ? {
+          merchantId: parseInt(this.options.merchant_id),
+          posId: parseInt(this.options.pos_id),
+          sessionId: payload.sessionId,
+          orderId: payload.orderId,
+          amount: payload.amount,
+          currency: payload.currency,
+          status: payload.status,
+          crc: this.options.crc,
+        }
+      : {
+          merchantId: parseInt(this.options.merchant_id),
+          posId: parseInt(this.options.pos_id),
+          sessionId: payload.sessionId,
+          orderId: payload.orderId,
+          amount: payload.amount,
+          currency: payload.currency,
+          refId: payload.refId,
+          bin: payload.bin,
+          mask: payload.mask,
+          cardType: payload.cardType,
+          cardDate: payload.cardDate,
+          hash: payload.hash,
+          crc: this.options.crc,
+        };
+
+    const expectedSign = this.hashSignaturePayload(signData);
+    return expectedSign === receivedSign;
+  }
+
+  isAllowedWebhookIp(ipAddress: string | undefined): boolean {
+    if (!ipAddress) {
+      return false;
+    }
+
+    const normalized = ipAddress.trim();
+    if (!normalized) {
+      return false;
+    }
+
+    if (this.options.sandbox && (normalized === "127.0.0.1" || normalized === "::1")) {
+      return true;
+    }
+
+    return P24_WEBHOOK_ALLOWED_IPS.includes(
+      normalized as (typeof P24_WEBHOOK_ALLOWED_IPS)[number],
+    );
+  }
+
+  private hashSignaturePayload(payload: Record<string, unknown>): string {
+    const jsonString = JSON.stringify(payload, null, 0).replace(/\\\//g, "/");
+    return crypto.createHash("sha384").update(jsonString, "utf8").digest("hex");
   }
 
   /**
@@ -205,5 +368,37 @@ export class P24ApiService {
     return this.options.sandbox
       ? "https://sandbox.przelewy24.pl/trnRequest"
       : "https://secure.przelewy24.pl/trnRequest";
+  }
+
+  generateCardTokenizationSign(sessionId: string): string {
+    return this.hashSignaturePayload({
+      merchantId: parseInt(this.options.merchant_id),
+      sessionId,
+      crc: this.options.crc,
+    });
+  }
+
+  getCardTokenizationScriptUrl(): string {
+    const base = this.options.sandbox
+      ? "https://sandbox.przelewy24.pl"
+      : "https://secure.przelewy24.pl";
+
+    return `${base}/js/cardTokenizationIframe.min.js`;
+  }
+
+  getCardWhitelabelScriptUrl(token: string): string {
+    const base = this.options.sandbox
+      ? "https://sandbox.przelewy24.pl"
+      : "https://secure.przelewy24.pl";
+
+    return `${base}/whitelabel/card/javascript/${encodeURIComponent(token)}`;
+  }
+
+  getCardWidgetScriptUrl(token: string): string {
+    const base = this.options.sandbox
+      ? "https://sandbox.przelewy24.pl"
+      : "https://secure.przelewy24.pl";
+
+    return `${base}/inchtml/ajaxPayment/ajax.js?token=${encodeURIComponent(token)}`;
   }
 }

@@ -6,24 +6,22 @@ vi.mock("../../services/p24-api", () => ({
     registerTransaction = vi.fn();
     processRefund = vi.fn();
     getBaseRedirectURL = vi.fn().mockReturnValue("https://sandbox.przelewy24.pl/trnRequest");
+    generateSign = vi.fn().mockReturnValue("test-widget-sign");
   },
 }));
 
-vi.mock("@medusajs/framework/utils", () => ({
-  AbstractPaymentProvider: class {
-    constructor() {}
-    static validateOptions() {}
-  },
-  isDefined: (val: unknown) => val !== undefined && val !== null,
-  PaymentActions: {
-    AUTHORIZED: "authorized",
-    SUCCESSFUL: "successful",
-    FAILED: "failed",
-    PENDING: "pending",
-    CANCELED: "canceled",
-    NOT_SUPPORTED: "not_supported",
-  },
-}));
+vi.mock("@medusajs/framework/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@medusajs/framework/utils")>();
+
+  return {
+    ...actual,
+    AbstractPaymentProvider: class {
+      constructor() {}
+      static validateOptions() {}
+    },
+    isDefined: (val: unknown) => val !== undefined && val !== null,
+  };
+});
 
 const TEST_OPTIONS = {
   merchant_id: "12345",
