@@ -1,21 +1,34 @@
 import P24Base from "../core/p24-base";
 import {
+  BlikOptions,
+  DEFAULT_BLIK_CHANNEL,
   P24PaymentIntentOptions,
   PaymentProviderKeys,
-  BlikOptions,
 } from "../types";
+import { coerceSandbox } from "../../../utils/coerce-sandbox";
 
 class P24BlikService extends P24Base {
   static identifier = PaymentProviderKeys.P24_BLIK;
 
+  private readonly blikOptions_: BlikOptions;
+
   constructor(cradle: Record<string, unknown>, options: BlikOptions) {
-    super(cradle, options);
+    const normalizedOptions: BlikOptions = {
+      ...options,
+      sandbox: coerceSandbox(options.sandbox),
+      channel: options.channel ?? DEFAULT_BLIK_CHANNEL,
+      white_label: options.white_label ?? true,
+    };
+
+    super(cradle, normalizedOptions);
+    this.blikOptions_ = normalizedOptions;
   }
 
   get paymentIntentOptions(): P24PaymentIntentOptions {
     return {
-      channel: 64, // BLIK channel - BLIK payments only
+      channel: this.blikOptions_.channel ?? DEFAULT_BLIK_CHANNEL,
       description: "Payment via Przelewy24 - BLIK",
+      white_label: this.blikOptions_.white_label ?? true,
     };
   }
 

@@ -105,7 +105,9 @@ module.exports = defineConfig({
 | `pos_id`       | P24 POS ID                             | Yes      | -                       |
 | `api_key`      | P24 API Key                            | Yes      | -                       |
 | `crc`          | P24 CRC Key for signature verification | Yes      | -                       |
-| `sandbox`      | Enable sandbox mode                    | No       | `false`                 |
+| `sandbox`      | Enable sandbox mode (`true`/`false` or `"true"`/`"false"`) | No       | `false`                 |
+| `card_channel` | P24 channel for card-only registration                   | No       | `4096`                  |
+| `visa_mobile_method_id` | P24 method id for Visa Mobile                   | No       | `198`                   |
 | `frontend_url` | Frontend URL for customer redirects    | No       | `http://localhost:3000` |
 | `backend_url`  | Backend URL for webhook notifications  | No       | `http://localhost:9000` |
 
@@ -120,9 +122,10 @@ P24_POS_ID=your_pos_id
 P24_API_KEY=your_api_key
 P24_CRC=your_crc_key
 
-# URL Configuration
-FRONTEND_URL=https://your-frontend-domain.com
-BACKEND_URL=https://your-backend-domain.com
+# URL Configuration (use the same names as medusa-config.ts)
+MEDUSA_STORE_URL=https://your-frontend-domain.com
+MEDUSA_BACKEND_URL=https://your-backend-domain.com   # public HTTPS — P24 webhooks hit this host
+P24_IS_SANDBOX=false
 ```
 
 ## Usage
@@ -144,7 +147,7 @@ BLIK payments use a two-phase flow:
 ```typescript
 // Create payment session for BLIK
 const paymentSession = await medusa.payment.createPaymentSession({
-  provider_id: "p24-blik",
+  provider_id: "pp_p24-blik_przelewy24",
   amount: 10000, // 100.00 PLN in grosze
   currency_code: "PLN",
   data: {
@@ -163,41 +166,99 @@ console.log(paymentSession.data.session_id); // Use this for BLIK processing
 **Phase 2: Process BLIK Code**
 
 ```typescript
-// Call internal API to process BLIK code
-const blikResponse = await fetch("/admin/plugin/blik", {
+// Store API (publishable key + cart context)
+const blikResponse = await fetch("/store/payments/blik/charge", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
+    "x-publishable-api-key": publishableKey,
   },
   body: JSON.stringify({
-    token: paymentSession.data.token, // Token from payment session
-    blikCode: "123456", // 6-digit BLIK code from user
+    token: paymentSession.data.token,
+    blikCode: "123456",
+    payment_session_id: paymentSession.id,
   }),
 });
 ```
 
-#### Card Payment
+> Legacy route `POST /payments/blik` remains as a deprecated wrapper.
+
+#### Card Payment 2.0 (white-label iframe)
+
+Per [P24 Card Payment 2.0 docs](https://developers.przelewy24.pl/extended/index.php?pl#tag/Inicjalizacja-formularza):
 
 ```typescript
-// Create payment session for cards
-const paymentSession = await medusa.payment.createPaymentSession({
-  provider_id: "p24-cards",
-  amount: 10000, // 100.00 PLN in grosze
-  currency_code: "PLN",
-  data: {
-    country: "PL", // Country code (defaults to "PL" if not provided)
-    language: "pl", // Language code (defaults to "pl" if not provided)
-  },
-  context: {
-    email: "customer@example.com",
-    billing_address: {
-      country_code: "PL",
-    },
-  },
+// 1) Create payment session — returns tokenization fields (no transaction register yet)
+const { payment_session } = await medusa.store.cart.createPaymentSession(cartId, {
+  provider_id: "pp_p24-cards_przelewy24",
 });
 
-// Redirect user to payment URL
-window.location.href = paymentSession.data.redirect_url;
+const { merchant_id, session_id, card_tokenization_sign } =
+  payment_session.data;
+
+// 2) Load P24 Card 2.0 SDK and render iframe
+// https://{sandbox|secure}.przelewy24.pl/js/cardTokenizationIframe.min.js
+// new Przelewy24CardTokenization(merchant_id, session_id, card_tokenization_sign)
+//   .render("form", "#container", { lang: "pl", ... })
+// On Pay: .tokenize("temporary") → listen for postMessage success with data.refId
+
+// 3) Register with refId, then run P24 whitelabel charge script in the browser
+const cardResponse = await fetch("/store/payments/card/charge", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-publishable-api-key": publishableKey,
+  },
+  body: JSON.stringify({
+    ref_id: refIdFromTokenization,
+    payment_session_id: payment_session.id,
+  }),
+});
+
+const { token, chargeScriptUrl } = await cardResponse.json();
+// 4) Load chargeScriptUrl and run Przelewy24CardWhileLabelHandler (3DS in merchant modal)
+// 5) Poll POST /store/carts/{cartId}/complete until type === "order"
+// 6) Capture happens via P24 webhook to urlStatus (not via a separate confirm API)
+```
+
+#### Visa Mobile (white-label)
+
+```typescript
+// 1) Create payment session — returns token and session_id
+const { payment_session } = await medusa.store.cart.createPaymentSession(cartId, {
+  provider_id: "pp_p24-visa-mobile_przelewy24",
+});
+
+// 2) Charge with phone number (E.164 without +)
+const visaResponse = await fetch("/store/payments/visa-mobile/charge", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-publishable-api-key": publishableKey,
+  },
+  body: JSON.stringify({
+    token: payment_session.data.token,
+    phone: "48600100200",
+    payment_session_id: payment_session.id,
+  }),
+});
+
+// 3) Customer approves in banking app
+// 4) Poll POST /store/carts/{cartId}/complete until type === "order"
+// 5) Capture happens via P24 webhook to urlStatus (not via a separate confirm API)
+```
+
+#### Transaction status (poll timeout fallback)
+
+```typescript
+await fetch("/store/payments/transaction/status", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    session_id: payment_session.data.session_id,
+    provider_id: payment_session.provider_id,
+  }),
+});
 ```
 
 #### General P24 Payment
@@ -205,7 +266,7 @@ window.location.href = paymentSession.data.redirect_url;
 ```typescript
 // Create payment session for general P24
 const paymentSession = await medusa.payment.createPaymentSession({
-  provider_id: "p24-general",
+  provider_id: "pp_p24-provider_przelewy24",
   amount: 10000,
   currency_code: "PLN",
   data: {
@@ -225,62 +286,104 @@ window.location.href = paymentSession.data.redirect_url;
 
 The plugin currently supports the following Przelewy24 payment methods:
 
-| Payment Method | Provider ID                   |
-| -------------- | ----------------------------- |
-| BLIK           | `pp_p24-blik_p24-blik`        |
-| Cards          | `pp_p24-cards_p24-cards`      |
-| General P24    | `pp_p24-provider_p24-general` |
+| Payment Method | Provider ID                         | Notes                          |
+| -------------- | ----------------------------------- | ------------------------------ |
+| BLIK           | `pp_p24-blik_przelewy24`            | White-label, channel 64        |
+| Cards          | `pp_p24-cards_przelewy24`           | White-label iframe, channel 4096 |
+| Visa Mobile    | `pp_p24-visa-mobile_przelewy24`     | White-label push approval      |
+| General P24    | `pp_p24-provider_przelewy24`        | Redirect to P24 method picker  |
 
 ## Payment Flows
 
-### 1. BLIK Payment Flow
+### 1. BLIK (white-label)
 
-1. **Phase 1**: Frontend creates payment session via `initiatePayment`
-2. **Phase 2**: Frontend collects BLIK code (6 digits) from customer
-3. **Phase 3**: Frontend calls internal API `/admin/plugin/blik` with BLIK code
-4. **Phase 4**: Backend calls P24 BLIK API to charge the payment
-5. **Phase 5**: Customer confirms payment on mobile device
-6. **Phase 6**: P24 sends webhook notification confirming payment
-7. **Phase 7**: Order is completed
+1. Create payment session (`initiatePayment`) → `token`, `session_id`
+2. Customer enters 6-digit BLIK code
+3. `POST /store/payments/blik/charge` → P24 `chargeByCode`
+4. Customer approves in banking app
+5. Storefront polls `POST /store/carts/{id}/complete` until order is created
+6. P24 sends webhook to `urlStatus` → verify + capture → `payment_collection.completed_at`
 
-**Note**: BLIK payments don't use redirect URLs. The entire flow happens through API calls.
+BLIK does not use redirect URLs.
 
-### 2. Card Payment Flow
+### 2. Cards (P24 Card 2.0 white-label)
 
-1. Customer is redirected to P24 card payment page
-2. Customer enters card details
-3. Payment is processed
-4. Customer is redirected back to store
-5. Webhook notification confirms payment
+1. Create payment session → tokenization fields only (`merchant_id`, `session_id`, `card_tokenization_sign`, `amount_grosze`) — **no** `transaction/register` yet
+2. Load `cardTokenizationIframe.min.js`, render iframe; regulation checkbox is **inside** the P24 widget
+3. On Pay: `tokenize("temporary")` → `refId` via postMessage
+4. `POST /store/payments/card/charge` with `ref_id` → `transaction/register` + returns `chargeScriptUrl`
+5. Browser runs `Przelewy24CardWhileLabelHandler` (3DS in merchant UI)
+6. Storefront polls `POST /store/carts/{id}/complete` until order is created
+7. P24 webhook → verify + capture
 
-### 3. General P24 Flow
+See [P24 Card 2.0 docs](https://developers.przelewy24.pl/extended/index.php?pl#tag/Inicjalizacja-formularza).
 
-1. Customer is redirected to P24 payment selection
-2. Customer chooses payment method (bank transfer, etc.)
-3. Payment is processed through chosen method
-4. Customer is redirected back to store
-5. Webhook notification confirms payment
+### 3. General P24 (redirect)
+
+1. Create payment session → `redirect_url`
+2. Customer pays on P24 hosted page
+3. Return to `frontend_url` / `return_url`
+4. Webhook confirms payment
+
+### Completion model (all white-label methods)
+
+| Step | Mechanism |
+|------|-----------|
+| Order creation | Storefront polls `complete`; Medusa `authorizePayment` queries P24 API |
+| Capture + `completed_at` | P24 webhook to `urlStatus`, or `reconcile-p24-payments` job (every 5 min) |
+
+**Do not** add a separate store “confirm” route to replace webhooks. Production capture is webhook-driven.
+
+> Body Chief monorepo: see `Medusa/docs/P24_PAYMENTS.md` and `Medusa/docs/adr/0009-p24-white-label-payments.md`.
 
 ## Webhook Configuration
 
-### Webhook URLs
+### Webhook URLs (auto-registered)
 
-The plugin provides webhook endpoints for each provider:
+On each `transaction/register`, the plugin sets:
 
-- **BLIK**: `{backend_url}/hooks/payment/p24-blik_p24-medusa-plugin`
-- **Cards**: `{backend_url}/hooks/payment/p24-cards_p24-medusa-plugin`
-- **General**: `{backend_url}/hooks/payment/p24-provider_p24-medusa-plugin`
+```text
+urlStatus: {backend_url}/hooks/payment/{service-identifier}_{payment-module-id}
+```
 
-### Return URL
+With `payment-module` config `id: "przelewy24"` (recommended):
 
-- **Return URL**: `{frontend_url}`
+| Method | Webhook URL |
+|--------|-------------|
+| Cards | `{backend_url}/hooks/payment/p24-cards_przelewy24` |
+| BLIK | `{backend_url}/hooks/payment/p24-blik_przelewy24` |
+| Visa Mobile | `{backend_url}/hooks/payment/p24-visa-mobile_przelewy24` |
+| General | `{backend_url}/hooks/payment/p24-provider_przelewy24` |
 
-Configure these URLs in your P24 merchant panel.
+Medusa route: `POST /hooks/payment/:provider` → `getWebhookActionAndData` → `processPaymentWorkflow`.
 
-**Note**: The webhook URLs follow Medusa's pattern: `{identifier}_{provider}` where:
+- **`backend_url`** must be the **Medusa** server URL (public HTTPS in production), not the storefront.
+- Webhooks are registered **per transaction**; you do not paste these into the P24 panel for white-label flows.
+- **Return URL** for redirects: `{frontend_url}` (and cart-specific `return_url` in session data).
 
-- `identifier` is the service's static identifier (e.g., `p24-blik`, `p24-cards`, `p24-provider`)
-- `provider` is the package name (`p24-medusa-plugin`)
+### Production checklist
+
+- [ ] `backend_url` reachable from the internet (P24 cannot call `localhost`)
+- [ ] `crc` matches merchant panel (signature verification)
+- [ ] P24 webhook source IPs allowed (see `P24_WEBHOOK_ALLOWED_IPS`; sandbox allows localhost)
+- [ ] Region enables correct `pp_p24-*_przelewy24` providers
+
+### Local development
+
+Without a tunnel, webhooks will not arrive. Orders may still be created via poll `complete`, but `payment_collection` can remain `not_paid` until the **reconcile** job runs (~5 min). Use ngrok + public `backend_url` for full webhook testing.
+
+```bash
+cd P24-package && yarn build && yalc publish --push  # Body Chief: update Medusa plugin
+```
+
+## Related documentation (Body Chief monorepo)
+
+| Document | Audience |
+|----------|----------|
+| [Medusa/docs/P24_PAYMENTS.md](../Medusa/docs/P24_PAYMENTS.md) | Backend / ops runbook |
+| [Medusa/docs/adr/0009-p24-white-label-payments.md](../Medusa/docs/adr/0009-p24-white-label-payments.md) | Architecture decisions |
+| [Medusa/CART_PAYMENTS_AND_DISCOUNTS_GUIDE.md](../Medusa/CART_PAYMENTS_AND_DISCOUNTS_GUIDE.md) | Store API integration |
+| [web/docs/P24_CHECKOUT.md](../web/docs/P24_CHECKOUT.md) | Next.js storefront |
 
 ## Extending the Plugin
 

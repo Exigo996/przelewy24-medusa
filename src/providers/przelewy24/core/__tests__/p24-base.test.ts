@@ -6,24 +6,22 @@ vi.mock("../../services/p24-api", () => ({
     registerTransaction = vi.fn();
     processRefund = vi.fn();
     getBaseRedirectURL = vi.fn().mockReturnValue("https://sandbox.przelewy24.pl/trnRequest");
+    generateSign = vi.fn().mockReturnValue("test-widget-sign");
   },
 }));
 
-vi.mock("@medusajs/framework/utils", () => ({
-  AbstractPaymentProvider: class {
-    constructor() {}
-    static validateOptions() {}
-  },
-  isDefined: (val: unknown) => val !== undefined && val !== null,
-  PaymentActions: {
-    AUTHORIZED: "authorized",
-    SUCCESSFUL: "successful",
-    FAILED: "failed",
-    PENDING: "pending",
-    CANCELED: "canceled",
-    NOT_SUPPORTED: "not_supported",
-  },
-}));
+vi.mock("@medusajs/framework/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@medusajs/framework/utils")>();
+
+  return {
+    ...actual,
+    AbstractPaymentProvider: class {
+      constructor() {}
+      static validateOptions() {}
+    },
+    isDefined: (val: unknown) => val !== undefined && val !== null,
+  };
+});
 
 const TEST_OPTIONS = {
   merchant_id: "12345",
@@ -94,5 +92,40 @@ describe("P24Base – amount conversion", () => {
 
     expect(mockRefund).toHaveBeenCalledOnce();
     expect(mockRefund.mock.calls[0][0].refunds[0].amount).toBe(3000);
+  });
+
+  it("refundPayment uses currency field when currency_code is missing", async () => {
+    const mockRefund = vi.fn().mockResolvedValue({
+      responseCode: 0,
+      data: [{ orderId: 1, status: true, message: "OK" }],
+    });
+    provider["p24Api"].processRefund = mockRefund;
+
+    await provider.refundPayment({
+      data: {
+        session_id: "session-123",
+        order_id: 1,
+        currency: "EUR",
+      },
+      amount: 30.5,
+      context: { idempotency_key: "refund-key-2" },
+    } as any);
+
+    expect(mockRefund).toHaveBeenCalledOnce();
+    expect(mockRefund.mock.calls[0][0].refunds[0].amount).toBe(3050);
+  });
+
+  it("refundPayment requires idempotency key", async () => {
+    await expect(
+      provider.refundPayment({
+        data: {
+          session_id: "session-123",
+          order_id: 1,
+          currency: "PLN",
+        },
+        amount: 30,
+        context: {},
+      } as any),
+    ).rejects.toThrow("idempotency key");
   });
 });
