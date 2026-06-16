@@ -196,27 +196,42 @@ export type P24TransactionStatusQueryProvider = {
   ) => Promise<{ medusaStatus: string; p24Status: number }>;
 };
 
+function isPaymentProviderKey(value: string): value is PaymentProviderKeys {
+  return Object.values(PaymentProviderKeys).includes(
+    value as PaymentProviderKeys,
+  );
+}
+
+function resolveProviderKeyFromProviderId(
+  providerId: string,
+): PaymentProviderKeys {
+  const match = providerId.match(/^pp_(.+)_przelewy24$/);
+
+  if (match && isPaymentProviderKey(match[1])) {
+    return match[1];
+  }
+
+  throw new Error("Unsupported payment provider");
+}
+
 export function resolveP24ProviderKeyForStatus(input: {
   provider_key?: PaymentProviderKeys;
   provider_id?: string;
 }): PaymentProviderKeys {
+  const providerKeyFromId = input.provider_id
+    ? resolveProviderKeyFromProviderId(input.provider_id)
+    : undefined;
+
   if (input.provider_key) {
+    if (providerKeyFromId && providerKeyFromId !== input.provider_key) {
+      throw new Error("Payment provider mismatch");
+    }
+
     return input.provider_key;
   }
 
-  if (input.provider_id) {
-    const match = input.provider_id.match(/^pp_(.+)_przelewy24$/);
-
-    if (
-      match &&
-      Object.values(PaymentProviderKeys).includes(
-        match[1] as PaymentProviderKeys,
-      )
-    ) {
-      return match[1] as PaymentProviderKeys;
-    }
-
-    throw new Error("Unsupported payment provider");
+  if (providerKeyFromId) {
+    return providerKeyFromId;
   }
 
   return PaymentProviderKeys.P24_BLIK;

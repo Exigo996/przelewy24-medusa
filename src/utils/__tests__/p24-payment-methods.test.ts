@@ -37,25 +37,27 @@ describe("fetchP24PaymentMethods cache", () => {
   it("reuses fresh cache entries and refetches after TTL", async () => {
     vi.useFakeTimers();
 
-    const p24Api = {
-      getPaymentMethods: vi.fn().mockResolvedValue({
-        responseCode: 0,
-        data: [{ id: 94, name: "mbank", group: "FastTransfers" }],
-      }),
-    };
+    try {
+      const p24Api = {
+        getPaymentMethods: vi.fn().mockResolvedValue({
+          responseCode: 0,
+          data: [{ id: 94, name: "mbank", group: "FastTransfers" }],
+        }),
+      };
 
-    const params = { lang: "pl", amountGrosze: 75000, currency: "PLN" };
+      const params = { lang: "pl", amountGrosze: 75001, currency: "PLN" };
 
-    await fetchP24PaymentMethods(p24Api as never, params);
-    await fetchP24PaymentMethods(p24Api as never, params);
-    expect(p24Api.getPaymentMethods).toHaveBeenCalledTimes(1);
+      await fetchP24PaymentMethods(p24Api as never, params);
+      await fetchP24PaymentMethods(p24Api as never, params);
+      expect(p24Api.getPaymentMethods).toHaveBeenCalledTimes(1);
 
-    vi.advanceTimersByTime(15 * 60 * 1000 + 1);
+      vi.advanceTimersByTime(15 * 60 * 1000 + 1);
 
-    await fetchP24PaymentMethods(p24Api as never, params);
-    expect(p24Api.getPaymentMethods).toHaveBeenCalledTimes(2);
-
-    vi.useRealTimers();
+      await fetchP24PaymentMethods(p24Api as never, params);
+      expect(p24Api.getPaymentMethods).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

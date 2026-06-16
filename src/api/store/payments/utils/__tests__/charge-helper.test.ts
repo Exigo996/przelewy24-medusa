@@ -26,6 +26,15 @@ describe("resolveP24ProviderKeyForStatus", () => {
     ).toBe(PaymentProviderKeys.P24_VISA_MOBILE);
   });
 
+  it("rejects conflicting provider key and provider id", () => {
+    expect(() =>
+      resolveP24ProviderKeyForStatus({
+        provider_key: PaymentProviderKeys.P24_BLIK,
+        provider_id: "pp_p24-cards_przelewy24",
+      }),
+    ).toThrow("Payment provider mismatch");
+  });
+
   it("defaults to BLIK when provider is omitted", () => {
     expect(resolveP24ProviderKeyForStatus({})).toBe(
       PaymentProviderKeys.P24_BLIK,
