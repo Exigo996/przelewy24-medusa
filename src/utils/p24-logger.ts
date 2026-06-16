@@ -3,6 +3,7 @@ const SENSITIVE_KEYS = new Set([
   "clientemail",
   "clientname",
   "clientaddres",
+  "clientaddress",
   "clientcity",
   "clientpostcode",
   "cardnumber",

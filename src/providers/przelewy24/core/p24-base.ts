@@ -539,8 +539,19 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
 
     try {
       const refundsUuid = crypto.randomUUID();
-      const requestId = context?.idempotency_key || `refund-${Date.now()}`;
-      const currencyCode = (paymentData?.currency_code as string) || "pln";
+      const requestId = context?.idempotency_key;
+
+      if (typeof requestId !== "string" || requestId.length === 0) {
+        throw this.buildError(
+          "Missing idempotency key for refund request",
+          new Error("context.idempotency_key is required"),
+        );
+      }
+
+      const currencyCode =
+        (paymentData?.currency_code as string) ||
+        (paymentData?.currency as string) ||
+        "pln";
 
       const refundData = {
         requestId,

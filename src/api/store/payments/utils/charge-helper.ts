@@ -5,6 +5,7 @@ import {
   PaymentSessionStatus,
 } from "@medusajs/framework/utils";
 import { buildLocalizedP24ErrorMessage } from "../../../../utils/p24-errors";
+import { PaymentProviderKeys } from "../../../../providers/przelewy24/types";
 
 type ChargeExecutorResult = {
   orderId?: number;
@@ -120,16 +121,7 @@ type PaymentProviderServiceLike = {
 };
 
 /**
- * Medusa's public `IPaymentModuleService` does not expose `retrieveProvider()`.
- * That method lives on the internal `PaymentProviderService`, which is only wired
- * through the payment module's Awilix cradle (`paymentProviderService_`).
- *
- * Plugin API routes (BLIK/card charge, reconcile job) need the concrete provider
- * instance to call P24-specific methods (`chargeBlikPayment`, `queryTransactionStatus`).
- * The supported module entry point is `container.resolve(Modules.PAYMENT)`, but the
- * framework does not surface provider retrieval on that facade — hence `__container__`.
- *
- * If Medusa adds a public API for this, switch to it and drop the internal access.
+ * Resolves PaymentProviderService via the payment module cradle; Medusa has no public API for this yet.
  */
 type PaymentModuleWithProviderContainer = {
   __container__: {
@@ -154,6 +146,31 @@ export function resolvePaymentProviderById<T>(
   );
 }
 
+export function assertPaymentSessionProvider(
+  session: { provider_id: string },
+  expectedProviderId: string,
+): void {
+  if (session.provider_id !== expectedProviderId) {
+    throw new Error("Payment session provider mismatch");
+  }
+}
+
+export function resolvePaymentSessionIdempotencyKey(session: {
+  id: string;
+  data?: Record<string, unknown> | null;
+}): string {
+  const medusaPaymentSessionId = session.data?.medusa_payment_session_id;
+
+  if (
+    typeof medusaPaymentSessionId === "string" &&
+    medusaPaymentSessionId.length > 0
+  ) {
+    return medusaPaymentSessionId;
+  }
+
+  return session.id;
+}
+
 export async function assertBlikChargeMatchesPaymentSession(
   req: MedusaRequest,
   paymentSessionId: string,
@@ -163,9 +180,7 @@ export async function assertBlikChargeMatchesPaymentSession(
   const paymentModule = req.scope.resolve(Modules.PAYMENT);
   const session = await paymentModule.retrievePaymentSession(paymentSessionId);
 
-  if (session.provider_id !== expectedProviderId) {
-    throw new Error("Payment session provider mismatch");
-  }
+  assertPaymentSessionProvider(session, expectedProviderId);
 
   const sessionToken =
     typeof session.data?.token === "string" ? session.data.token : undefined;
@@ -173,6 +188,38 @@ export async function assertBlikChargeMatchesPaymentSession(
   if (!sessionToken || sessionToken !== token) {
     throw new Error("Payment session token mismatch");
   }
+}
+
+export type P24TransactionStatusQueryProvider = {
+  queryTransactionStatus: (
+    sessionId: string,
+  ) => Promise<{ medusaStatus: string; p24Status: number }>;
+};
+
+export function resolveP24ProviderKeyForStatus(input: {
+  provider_key?: PaymentProviderKeys;
+  provider_id?: string;
+}): PaymentProviderKeys {
+  if (input.provider_key) {
+    return input.provider_key;
+  }
+
+  if (input.provider_id) {
+    const match = input.provider_id.match(/^pp_(.+)_przelewy24$/);
+
+    if (
+      match &&
+      Object.values(PaymentProviderKeys).includes(
+        match[1] as PaymentProviderKeys,
+      )
+    ) {
+      return match[1] as PaymentProviderKeys;
+    }
+
+    throw new Error("Unsupported payment provider");
+  }
+
+  return PaymentProviderKeys.P24_BLIK;
 }
 
 export function resolveP24Provider<T>(

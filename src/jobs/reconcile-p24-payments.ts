@@ -3,7 +3,7 @@ import { ContainerRegistrationKeys } from '@medusajs/framework/utils'
 import { processPaymentWorkflow } from '@medusajs/medusa/core-flows'
 import { PaymentActions } from '@medusajs/framework/utils'
 
-import { resolvePaymentProviderById } from '../api/store/payments/utils/charge-helper'
+import { resolvePaymentProviderById, type P24TransactionStatusQueryProvider } from '../api/store/payments/utils/charge-helper'
 import {
   getJobErrorMessage,
   isExpectedStalePaymentJobFailure,
@@ -85,14 +85,13 @@ export default async function reconcileP24PaymentsJob(
       (sessionData.sessionId as string | undefined) ||
       session.id
 
-    const providerId = session.provider_id as string
-    const provider = resolvePaymentProviderById<{
-      queryTransactionStatus: (id: string) => Promise<{
-        medusaStatus: string
-      }>
-    }>(container, providerId)
-
     try {
+      const providerId = session.provider_id as string
+      const provider = resolvePaymentProviderById<P24TransactionStatusQueryProvider>(
+        container,
+        providerId,
+      )
+
       const { medusaStatus } = await provider.queryTransactionStatus(p24SessionId)
 
       if (medusaStatus !== 'captured' && medusaStatus !== 'authorized') {

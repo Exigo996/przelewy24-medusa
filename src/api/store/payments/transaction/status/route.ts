@@ -1,12 +1,17 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { z } from "zod";
 
-import P24BlikService from '../../../../../providers/przelewy24/services/p24-blik'
-import { resolveP24Provider } from '../../utils/charge-helper'
-import { PaymentProviderKeys } from '../../../../../providers/przelewy24/types'
+import {
+  resolveP24Provider,
+  resolveP24ProviderKeyForStatus,
+  type P24TransactionStatusQueryProvider,
+} from "../../utils/charge-helper";
+import { PaymentProviderKeys } from "../../../../../providers/przelewy24/types";
 
 const statusSchema = z.object({
   session_id: z.string().min(1),
+  provider_key: z.nativeEnum(PaymentProviderKeys).optional(),
+  provider_id: z.string().min(1).optional(),
 });
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
@@ -21,12 +26,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     });
   }
 
-  const { session_id } = validationResult.data;
+  const { session_id, provider_key, provider_id } = validationResult.data;
 
   try {
-    const provider = resolveP24Provider<P24BlikService>(
+    const providerKey = resolveP24ProviderKeyForStatus({
+      provider_key,
+      provider_id,
+    });
+
+    const provider = resolveP24Provider<P24TransactionStatusQueryProvider>(
       req,
-      PaymentProviderKeys.P24_BLIK,
+      providerKey,
     );
 
     const { medusaStatus, p24Status } = await provider.queryTransactionStatus(

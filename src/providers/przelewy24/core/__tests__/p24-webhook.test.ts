@@ -78,12 +78,21 @@ const createDeps = (
 };
 
 describe("extractP24WebhookSourceIp", () => {
-  it("reads the first forwarded-for address", () => {
+  it("prefers x-real-ip over x-forwarded-for", () => {
     expect(
       extractP24WebhookSourceIp({
-        "x-forwarded-for": "5.252.202.254, 10.0.0.1",
+        "x-real-ip": "5.252.202.254",
+        "x-forwarded-for": "1.2.3.4, 10.0.0.1",
       }),
     ).toBe("5.252.202.254");
+  });
+
+  it("reads the last forwarded-for address", () => {
+    expect(
+      extractP24WebhookSourceIp({
+        "x-forwarded-for": "1.2.3.4, 10.0.0.1",
+      }),
+    ).toBe("10.0.0.1");
   });
 });
 
@@ -117,6 +126,23 @@ describe("processP24Webhook", () => {
 
     expect(result.action).toBe(PaymentActions.NOT_SUPPORTED);
     expect(deps.p24Api.verifyTransaction).not.toHaveBeenCalled();
+  });
+
+  it("returns failed action with Medusa session id when verification fails", async () => {
+    const deps = createDeps({
+      verifyTransaction: vi.fn().mockResolvedValue({
+        responseCode: 1,
+        data: { status: "failed" },
+      }),
+    });
+
+    const result = await processP24Webhook(deps, webhookData);
+
+    expect(result.action).toBe(PaymentActions.FAILED);
+    expect(result.data).toMatchObject({
+      session_id: "payses_medusa_1",
+      amount: 49.99,
+    });
   });
 
   it("returns successful action for verified authorized payments", async () => {

@@ -19,7 +19,24 @@ type MethodsCacheEntry = {
 };
 
 const METHODS_CACHE_TTL_MS = 15 * 60 * 1000;
+const METHODS_CACHE_MAX_ENTRIES = 500;
 const methodsCache = new Map<string, MethodsCacheEntry>();
+
+function pruneMethodsCache(now: number): void {
+  for (const [key, entry] of methodsCache.entries()) {
+    if (entry.expiresAt <= now) {
+      methodsCache.delete(key);
+    }
+  }
+
+  while (methodsCache.size > METHODS_CACHE_MAX_ENTRIES) {
+    const oldestKey = methodsCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    methodsCache.delete(oldestKey);
+  }
+}
 
 export function parseP24MethodId(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
@@ -77,13 +94,16 @@ export async function fetchP24PaymentMethods(
     currency: string;
   },
 ): Promise<P24PaymentMethodRecord[]> {
+  const now = Date.now();
+  pruneMethodsCache(now);
+
   const lang = params.lang.toLowerCase();
   const currency = params.currency.toUpperCase();
   const amountGrosze = Math.max(0, Math.trunc(params.amountGrosze));
   const cacheKey = buildMethodsCacheKey(lang, amountGrosze, currency);
   const cached = methodsCache.get(cacheKey);
 
-  if (cached && cached.expiresAt > Date.now()) {
+  if (cached && cached.expiresAt > now) {
     return cached.methods;
   }
 
@@ -94,7 +114,7 @@ export async function fetchP24PaymentMethods(
     .filter((method): method is P24PaymentMethodRecord => method != null);
 
   methodsCache.set(cacheKey, {
-    expiresAt: Date.now() + METHODS_CACHE_TTL_MS,
+    expiresAt: now + METHODS_CACHE_TTL_MS,
     methods,
   });
 

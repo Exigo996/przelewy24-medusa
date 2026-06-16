@@ -58,6 +58,22 @@ const P24_ERROR_MESSAGES: Record<string, LocalizedMessage> = {
   },
 };
 
+function normalizeP24Code(code: string | number): string {
+  if (typeof code === "number") {
+    return `err${String(code).padStart(2, "0")}`;
+  }
+
+  const raw = code.trim().toLowerCase();
+  if (raw.startsWith("err")) {
+    const numericPart = raw.slice(3);
+    return /^\d+$/.test(numericPart)
+      ? `err${numericPart.padStart(2, "0")}`
+      : raw;
+  }
+
+  return /^\d+$/.test(raw) ? `err${raw.padStart(2, "0")}` : `err${raw}`;
+}
+
 export function mapP24ErrorCode(
   code: string | number | undefined,
   locale: "pl" | "en" = "pl",
@@ -66,12 +82,7 @@ export function mapP24ErrorCode(
     return undefined;
   }
 
-  const normalized =
-    typeof code === "number"
-      ? `err${code}`
-      : code.startsWith("err")
-        ? code
-        : `err${code}`;
+  const normalized = normalizeP24Code(code);
 
   const message = P24_ERROR_MESSAGES[normalized];
   return message?.[locale] ?? message?.en;
@@ -86,7 +97,7 @@ export function extractP24ErrorCode(payload: unknown): string | undefined {
   const responseCode = record.responseCode;
 
   if (typeof responseCode === "number" && responseCode !== 0) {
-    return `err${responseCode}`;
+    return normalizeP24Code(responseCode);
   }
 
   const data = record.data;

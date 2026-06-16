@@ -1,5 +1,3 @@
-// Keep in sync with Medusa/src/utils/payments/payment-job-errors.ts
-
 export function getJobErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     if (error.cause) {

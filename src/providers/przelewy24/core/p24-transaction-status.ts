@@ -45,7 +45,17 @@ export async function fetchTransactionDetailsAndStatus(
     );
   }
 
-  const p24Status = parseInt(transactionDetails.data.status, 10);
+  const p24Status = Number(transactionDetails.data.status);
+
+  if (!Number.isInteger(p24Status)) {
+    throw deps.buildError(
+      "Invalid transaction status received from P24",
+      new Error(
+        `Unexpected P24 status: ${String(transactionDetails.data.status)}`,
+      ),
+    );
+  }
+
   const medusaStatus = mapP24StatusToMedusaStatus(p24Status);
 
   deps.logger.debug(

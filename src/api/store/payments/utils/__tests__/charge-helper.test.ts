@@ -3,9 +3,55 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertBlikChargeMatchesPaymentSession,
   resolveP24Provider,
+  resolveP24ProviderKeyForStatus,
   resolvePaymentProviderById,
+  resolvePaymentSessionIdempotencyKey,
 } from "../charge-helper";
 import { PaymentProviderKeys } from "../../../../../providers/przelewy24/types";
+
+describe("resolveP24ProviderKeyForStatus", () => {
+  it("parses full provider id", () => {
+    expect(
+      resolveP24ProviderKeyForStatus({
+        provider_id: "pp_p24-cards_przelewy24",
+      }),
+    ).toBe(PaymentProviderKeys.P24_CARDS);
+  });
+
+  it("accepts provider key directly", () => {
+    expect(
+      resolveP24ProviderKeyForStatus({
+        provider_key: PaymentProviderKeys.P24_VISA_MOBILE,
+      }),
+    ).toBe(PaymentProviderKeys.P24_VISA_MOBILE);
+  });
+
+  it("defaults to BLIK when provider is omitted", () => {
+    expect(resolveP24ProviderKeyForStatus({})).toBe(
+      PaymentProviderKeys.P24_BLIK,
+    );
+  });
+});
+
+describe("resolvePaymentSessionIdempotencyKey", () => {
+  it("prefers medusa_payment_session_id when it is a non-empty string", () => {
+    expect(
+      resolvePaymentSessionIdempotencyKey({
+        id: "payses_1",
+        data: { medusa_payment_session_id: "payses_medusa" },
+      }),
+    ).toBe("payses_medusa");
+  });
+
+  it("falls back to payment session id for invalid values", () => {
+    expect(
+      resolvePaymentSessionIdempotencyKey({
+        id: "payses_1",
+        data: { medusa_payment_session_id: 123 },
+      }),
+    ).toBe("payses_1");
+  });
+});
 
 describe("assertBlikChargeMatchesPaymentSession", () => {
   it("accepts matching provider and token", async () => {
@@ -54,6 +100,29 @@ describe("assertBlikChargeMatchesPaymentSession", () => {
         "pp_p24-blik_przelewy24",
       ),
     ).rejects.toThrow("token mismatch");
+  });
+
+  it("rejects provider mismatch", async () => {
+    const req = {
+      scope: {
+        resolve: vi.fn().mockReturnValue({
+          retrievePaymentSession: vi.fn().mockResolvedValue({
+            id: "payses_1",
+            provider_id: "pp_p24-blik_przelewy24",
+            data: { token: "tok_abc" },
+          }),
+        }),
+      },
+    };
+
+    await expect(
+      assertBlikChargeMatchesPaymentSession(
+        req as never,
+        "payses_1",
+        "tok_abc",
+        "pp_p24-cards_przelewy24",
+      ),
+    ).rejects.toThrow("provider mismatch");
   });
 });
 

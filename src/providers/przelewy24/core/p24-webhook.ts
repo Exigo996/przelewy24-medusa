@@ -7,8 +7,7 @@ import { PaymentActions } from "@medusajs/framework/utils";
 import { P24ApiService } from "../services/p24-api";
 import { P24WebhookPayload } from "../types";
 import { getAmountFromSmallestUnit } from "../../../utils/get-smallest-unit";
-import { createP24Logger } from "../../../utils/p24-logger";
-import { redactUnknown } from "../../../utils/p24-logger";
+import { createP24Logger, redactUnknown } from "../../../utils/p24-logger";
 
 import { fetchTransactionDetailsAndStatus } from "./p24-transaction-status";
 
@@ -19,14 +18,18 @@ export function extractP24WebhookSourceIp(
     return undefined;
   }
 
-  const forwardedFor = headers["x-forwarded-for"] || headers["X-Forwarded-For"];
-  if (typeof forwardedFor === "string" && forwardedFor.length > 0) {
-    return forwardedFor.split(",")[0]?.trim();
-  }
-
   const realIp = headers["x-real-ip"] || headers["X-Real-IP"];
   if (typeof realIp === "string" && realIp.length > 0) {
     return realIp.trim();
+  }
+
+  const forwardedFor = headers["x-forwarded-for"] || headers["X-Forwarded-For"];
+  if (typeof forwardedFor === "string" && forwardedFor.length > 0) {
+    const ips = forwardedFor
+      .split(",")
+      .map((ip) => ip.trim())
+      .filter(Boolean);
+    return ips.length > 0 ? ips[ips.length - 1] : undefined;
   }
 
   return undefined;
@@ -98,7 +101,7 @@ export async function processP24Webhook(
       return {
         action: PaymentActions.FAILED,
         data: {
-          session_id: sessionId,
+          session_id: medusaPaymentSessionId,
           amount: amountNormal,
         },
       };

@@ -147,7 +147,7 @@ BLIK payments use a two-phase flow:
 ```typescript
 // Create payment session for BLIK
 const paymentSession = await medusa.payment.createPaymentSession({
-  provider_id: "p24-blik",
+  provider_id: "pp_p24-blik_przelewy24",
   amount: 10000, // 100.00 PLN in grosze
   currency_code: "PLN",
   data: {
@@ -224,6 +224,12 @@ const { token, chargeScriptUrl } = await cardResponse.json();
 #### Visa Mobile (white-label)
 
 ```typescript
+// 1) Create payment session — returns token and session_id
+const { payment_session } = await medusa.store.cart.createPaymentSession(cartId, {
+  provider_id: "pp_p24-visa-mobile_przelewy24",
+});
+
+// 2) Charge with phone number (E.164 without +)
 const visaResponse = await fetch("/store/payments/visa-mobile/charge", {
   method: "POST",
   headers: {
@@ -231,11 +237,15 @@ const visaResponse = await fetch("/store/payments/visa-mobile/charge", {
     "x-publishable-api-key": publishableKey,
   },
   body: JSON.stringify({
-    token: paymentSession.data.token,
-    phone: "48600100200", // E.164 without +
-    payment_session_id: paymentSession.id,
+    token: payment_session.data.token,
+    phone: "48600100200",
+    payment_session_id: payment_session.id,
   }),
 });
+
+// 3) Customer approves in banking app
+// 4) Poll POST /store/carts/{cartId}/complete until type === "order"
+// 5) Capture happens via P24 webhook to urlStatus (not via a separate confirm API)
 ```
 
 #### Transaction status (poll timeout fallback)
@@ -244,7 +254,10 @@ const visaResponse = await fetch("/store/payments/visa-mobile/charge", {
 await fetch("/store/payments/transaction/status", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ session_id: paymentSession.data.session_id }),
+  body: JSON.stringify({
+    session_id: payment_session.data.session_id,
+    provider_id: payment_session.provider_id,
+  }),
 });
 ```
 
@@ -253,7 +266,7 @@ await fetch("/store/payments/transaction/status", {
 ```typescript
 // Create payment session for general P24
 const paymentSession = await medusa.payment.createPaymentSession({
-  provider_id: "p24-general",
+  provider_id: "pp_p24-provider_przelewy24",
   amount: 10000,
   currency_code: "PLN",
   data: {

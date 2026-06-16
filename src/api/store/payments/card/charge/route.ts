@@ -3,9 +3,15 @@ import { Modules } from "@medusajs/framework/utils";
 import { z } from "zod";
 
 import P24CardsService from "../../../../../providers/przelewy24/services/p24-cards";
-import { resolveP24Provider } from "../../utils/charge-helper";
+import {
+  assertPaymentSessionProvider,
+  resolveP24Provider,
+  resolvePaymentSessionIdempotencyKey,
+} from "../../utils/charge-helper";
 import { PaymentProviderKeys } from "../../../../../providers/przelewy24/types";
 import { normalizeP24SessionData } from "../../../../../utils/p24-session-data";
+
+const CARDS_PROVIDER_ID = `pp_${PaymentProviderKeys.P24_CARDS}_przelewy24`;
 
 const cardRegisterSchema = z.object({
   ref_id: z.string().min(1, "Card reference id is required").max(200),
@@ -33,6 +39,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const paymentSession =
       await paymentModule.retrievePaymentSession(payment_session_id);
 
+    assertPaymentSessionProvider(paymentSession, CARDS_PROVIDER_ID);
+
     const provider = resolveP24Provider<P24CardsService>(
       req,
       PaymentProviderKeys.P24_CARDS,
@@ -44,9 +52,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         amount: paymentSession.amount,
         currency_code: paymentSession.currency_code,
         context: {
-          idempotency_key:
-            (paymentSession.data?.medusa_payment_session_id as string) ||
-            paymentSession.id,
+          idempotency_key: resolvePaymentSessionIdempotencyKey(paymentSession),
         },
         data: {
           ...(paymentSession.data ?? {}),

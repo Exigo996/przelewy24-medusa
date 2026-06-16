@@ -155,7 +155,7 @@ export class P24ApiService {
   async getTransactionBySessionId(
     sessionId: string,
   ): Promise<P24TransactionBySessionIdResponse> {
-    const endpoint = `/transaction/by/sessionId/${sessionId}`;
+    const endpoint = `/transaction/by/sessionId/${encodeURIComponent(sessionId)}`;
     return this.makeRequest(endpoint, "GET");
   }
 
@@ -277,6 +277,17 @@ export class P24ApiService {
     return crypto.createHash("sha384").update(jsonString, "utf8").digest("hex");
   }
 
+  private secureCompareHex(expected: string, received: string): boolean {
+    const expectedBuf = Buffer.from(expected, "hex");
+    const receivedBuf = Buffer.from(received, "hex");
+
+    if (expectedBuf.length !== receivedBuf.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(expectedBuf, receivedBuf);
+  }
+
   /**
    * Verify webhook signature
    */
@@ -298,7 +309,7 @@ export class P24ApiService {
     };
 
     const expectedSign = this.hashSignaturePayload(signData);
-    return expectedSign === receivedSign;
+    return this.secureCompareHex(expectedSign, receivedSign);
   }
 
   verifyCardPaymentNotificationSignature(
@@ -334,7 +345,7 @@ export class P24ApiService {
         };
 
     const expectedSign = this.hashSignaturePayload(signData);
-    return expectedSign === receivedSign;
+    return this.secureCompareHex(expectedSign, receivedSign);
   }
 
   isAllowedWebhookIp(ipAddress: string | undefined): boolean {

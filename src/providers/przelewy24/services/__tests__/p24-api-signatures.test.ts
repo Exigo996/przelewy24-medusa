@@ -46,7 +46,7 @@ describe('P24ApiService signatures', () => {
       currency: 'PLN',
       orderId: 100,
       refId: 'ref-1',
-      bin: 411111,
+      bin: '411111',
       mask: '411111******1111',
       cardType: 'visa',
       cardDate: '12/30',
