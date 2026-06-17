@@ -182,15 +182,6 @@ export interface P24CardChargeResponse {
   message?: string;
 }
 
-export interface P24VisaMobileChargeResponse {
-  responseCode: number;
-  data: {
-    orderId: number;
-    message?: string;
-  };
-  message?: string;
-}
-
 export interface P24CardInfoResponse {
   responseCode: number;
   data: {
@@ -209,11 +200,6 @@ export interface P24CardInfoResponse {
 export interface P24BlikChargeByCodeData {
   token: string;
   blikCode: string;
-}
-
-export interface P24VisaMobileChargeData {
-  token: string;
-  phone: string;
 }
 
 /**

@@ -25,7 +25,7 @@ class P24VisaMobileService extends P24Base {
       ...options,
       sandbox: coerceSandbox(options.sandbox),
       visa_mobile_method_id: methodId,
-      white_label: options.white_label ?? true,
+      white_label: options.white_label ?? false,
     };
 
     super(cradle, normalizedOptions);
@@ -36,7 +36,7 @@ class P24VisaMobileService extends P24Base {
     const options: P24PaymentIntentOptions = {
       method_id: this.visaMobileOptions_.visa_mobile_method_id,
       description: "Payment via Przelewy24 - Visa Mobile",
-      white_label: this.visaMobileOptions_.white_label ?? true,
+      white_label: this.visaMobileOptions_.white_label ?? false,
     };
 
     if (
@@ -51,13 +51,6 @@ class P24VisaMobileService extends P24Base {
 
   protected getProviderKey(): string {
     return PaymentProviderKeys.P24_VISA_MOBILE;
-  }
-
-  async chargeVisaMobilePayment(token: string, phone: string) {
-    return this.p24Api.chargeVisaMobile({
-      token,
-      phone,
-    });
   }
 }
 
