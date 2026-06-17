@@ -78,6 +78,16 @@ const createDeps = (
 };
 
 describe("extractP24WebhookSourceIp", () => {
+  it("prefers cf-connecting-ip when behind Cloudflare", () => {
+    expect(
+      extractP24WebhookSourceIp({
+        "cf-connecting-ip": "5.252.202.254",
+        "x-real-ip": "172.64.200.81",
+        "x-forwarded-for": "5.252.202.254, 172.64.200.81",
+      }),
+    ).toBe("5.252.202.254");
+  });
+
   it("prefers x-real-ip over x-forwarded-for", () => {
     expect(
       extractP24WebhookSourceIp({
@@ -87,12 +97,12 @@ describe("extractP24WebhookSourceIp", () => {
     ).toBe("5.252.202.254");
   });
 
-  it("reads the last forwarded-for address", () => {
+  it("reads the first forwarded-for address", () => {
     expect(
       extractP24WebhookSourceIp({
-        "x-forwarded-for": "1.2.3.4, 10.0.0.1",
+        "x-forwarded-for": "5.252.202.254, 172.64.200.81",
       }),
-    ).toBe("10.0.0.1");
+    ).toBe("5.252.202.254");
   });
 });
 
