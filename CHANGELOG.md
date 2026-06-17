@@ -1,10 +1,17 @@
 # Changelog
 
+## 0.1.2
+
+### Changed
+- Visa Mobile (`pp_p24-visa-mobile_przelewy24`) now uses P24 redirect with pre-selected method `198` instead of white-label charge
+
+### Removed
+- `POST /store/payments/visa-mobile/charge` endpoint and `chargeVisaMobile` API client (breaking change)
+
 ## 0.1.0
 
 ### Added
 - White-label card payments via P24 hosted card iframe + `POST /store/payments/card/charge`
-- White-label Visa Mobile payments via `POST /store/payments/visa-mobile/charge`
 - Hardened BLIK route at `POST /store/payments/blik/charge` (legacy `/payments/blik` deprecated)
 - Transaction status endpoint `POST /store/payments/transaction/status`
 - Scheduled reconciliation job `reconcile-p24-payments`

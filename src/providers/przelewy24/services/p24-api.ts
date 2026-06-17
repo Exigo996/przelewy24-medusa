@@ -14,8 +14,6 @@ import {
   P24TransactionBySessionIdResponse,
   P24TransactionResponse,
   P24VerificationResponse,
-  P24VisaMobileChargeData,
-  P24VisaMobileChargeResponse,
   P24WebhookPayload,
 } from "../types";
 import { coerceSandbox } from "../../../utils/coerce-sandbox";
@@ -199,18 +197,6 @@ export class P24ApiService {
    */
   async getCardInfo(orderId: number): Promise<P24CardInfoResponse> {
     return this.makeRequest(`/card/info/${orderId}`, "GET");
-  }
-
-  /**
-   * Charge Visa Mobile using phone number (white-label)
-   */
-  async chargeVisaMobile(
-    data: P24VisaMobileChargeData,
-  ): Promise<P24VisaMobileChargeResponse> {
-    return this.makeRequest("/paymentMethod/visaMobile/charge", "POST", {
-      token: data.token,
-      phone: data.phone,
-    });
   }
 
   /**

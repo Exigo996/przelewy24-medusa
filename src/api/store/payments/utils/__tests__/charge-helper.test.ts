@@ -137,7 +137,7 @@ describe("assertBlikChargeMatchesPaymentSession", () => {
 
 describe("resolveP24Provider", () => {
   it("retrieves provider from payment module container", () => {
-    const visaProvider = { chargeVisaMobilePayment: vi.fn() };
+    const visaProvider = { queryTransactionStatus: vi.fn() };
     const retrieveProvider = vi.fn().mockReturnValue(visaProvider);
 
     const req = {

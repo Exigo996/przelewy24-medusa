@@ -221,30 +221,19 @@ const { token, chargeScriptUrl } = await cardResponse.json();
 // 6) Capture happens via P24 webhook to urlStatus (not via a separate confirm API)
 ```
 
-#### Visa Mobile (white-label)
+#### Visa Mobile (redirect with pre-selected method)
 
 ```typescript
-// 1) Create payment session — returns token and session_id
+// 1) Create payment session — returns redirect_url with method 198 pre-selected
 const { payment_session } = await medusa.store.cart.createPaymentSession(cartId, {
   provider_id: "pp_p24-visa-mobile_przelewy24",
 });
 
-// 2) Charge with phone number (E.164 without +)
-const visaResponse = await fetch("/store/payments/visa-mobile/charge", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "x-publishable-api-key": publishableKey,
-  },
-  body: JSON.stringify({
-    token: payment_session.data.token,
-    phone: "48600100200",
-    payment_session_id: payment_session.id,
-  }),
-});
+// 2) Redirect customer to P24 Visa Mobile flow
+window.location.href = payment_session.data.redirect_url;
 
-// 3) Customer approves in banking app
-// 4) Poll POST /store/carts/{cartId}/complete until type === "order"
+// 3) Customer completes payment on P24 hosted page
+// 4) Return to frontend_url / return_url
 // 5) Capture happens via P24 webhook to urlStatus (not via a separate confirm API)
 ```
 
@@ -290,7 +279,7 @@ The plugin currently supports the following Przelewy24 payment methods:
 | -------------- | ----------------------------------- | ------------------------------ |
 | BLIK           | `pp_p24-blik_przelewy24`            | White-label, channel 64        |
 | Cards          | `pp_p24-cards_przelewy24`           | White-label iframe, channel 4096 |
-| Visa Mobile    | `pp_p24-visa-mobile_przelewy24`     | White-label push approval      |
+| Visa Mobile    | `pp_p24-visa-mobile_przelewy24`     | Redirect with method `198`     |
 | General P24    | `pp_p24-provider_przelewy24`        | Redirect to P24 method picker  |
 
 ## Payment Flows
@@ -318,7 +307,14 @@ BLIK does not use redirect URLs.
 
 See [P24 Card 2.0 docs](https://developers.przelewy24.pl/extended/index.php?pl#tag/Inicjalizacja-formularza).
 
-### 3. General P24 (redirect)
+### 3. Visa Mobile (redirect with pre-selected method)
+
+1. Create payment session → `redirect_url` (P24 `transaction/register` includes `method: 198`)
+2. Customer pays on P24 hosted Visa Mobile page
+3. Return to `frontend_url` / `return_url`
+4. Webhook confirms payment
+
+### 4. General P24 (redirect)
 
 1. Create payment session → `redirect_url`
 2. Customer pays on P24 hosted page
