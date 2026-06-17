@@ -44,8 +44,18 @@ class TestP24Provider extends P24Base {
     return "test-p24";
   }
 
+  constructor(cradle: Record<string, unknown> = {}) {
+    super(cradle, TEST_OPTIONS);
+  }
+}
+
+class TestP24ProviderWithThrowingQuery extends TestP24Provider {
   constructor() {
-    super({}, TEST_OPTIONS);
+    super({
+      resolve: () => {
+        throw new Error("Could not resolve 'query'");
+      },
+    });
   }
 }
 
@@ -127,5 +137,25 @@ describe("P24Base – amount conversion", () => {
         context: {},
       } as any),
     ).rejects.toThrow("idempotency key");
+  });
+});
+
+describe("P24Base – findMedusaPaymentSessionId", () => {
+  it("returns payses id without touching container query", async () => {
+    const provider = new TestP24ProviderWithThrowingQuery();
+
+    await expect(
+      provider["findMedusaPaymentSessionId"](
+        "payses_01KVA2PDHS1FRFK30KJMGSMJE7",
+      ),
+    ).resolves.toBe("payses_01KVA2PDHS1FRFK30KJMGSMJE7");
+  });
+
+  it("falls back to raw session id when query is unavailable", async () => {
+    const provider = new TestP24ProviderWithThrowingQuery();
+
+    await expect(
+      provider["findMedusaPaymentSessionId"]("custom-p24-session"),
+    ).resolves.toBe("custom-p24-session");
   });
 });

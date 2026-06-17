@@ -1,3 +1,17 @@
+const MEDUSA_PAYMENT_SESSION_ID_WITH_RETRY_SUFFIX =
+  /^(payses_[0-9A-Z]{26})(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+
+/**
+ * P24 transaction sessionId is usually the Medusa payment session id (`payses_*`).
+ * Retried payments append a UUID suffix after updatePayment.
+ */
+export function inferMedusaPaymentSessionIdFromP24SessionId(
+  p24SessionId: string,
+): string | undefined {
+  const match = p24SessionId.match(MEDUSA_PAYMENT_SESSION_ID_WITH_RETRY_SUFFIX);
+  return match?.[1];
+}
+
 export type NormalizedP24SessionData = {
   session_id: string;
   token?: string;
