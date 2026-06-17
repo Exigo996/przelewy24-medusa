@@ -6,6 +6,7 @@ import { redactUnknown } from '../p24-logger'
 import {
   getOrderId,
   getSessionId,
+  inferMedusaPaymentSessionIdFromP24SessionId,
   normalizeP24SessionData,
 } from '../p24-session-data'
 
@@ -40,6 +41,30 @@ describe('redactUnknown', () => {
       clientAddress: '[REDACTED]',
       sessionId: 'sess_1',
     })
+  })
+})
+
+describe('inferMedusaPaymentSessionIdFromP24SessionId', () => {
+  it('returns payses id when P24 sessionId is the Medusa payment session', () => {
+    expect(
+      inferMedusaPaymentSessionIdFromP24SessionId(
+        'payses_01KVA2PDHS1FRFK30KJMGSMJE7',
+      ),
+    ).toBe('payses_01KVA2PDHS1FRFK30KJMGSMJE7')
+  })
+
+  it('strips retry UUID suffix from payses ids', () => {
+    expect(
+      inferMedusaPaymentSessionIdFromP24SessionId(
+        'payses_01KVA2PDHS1FRFK30KJMGSMJE7-550e8400-e29b-41d4-a716-446655440000',
+      ),
+    ).toBe('payses_01KVA2PDHS1FRFK30KJMGSMJE7')
+  })
+
+  it('returns undefined for non-payses P24 session ids', () => {
+    expect(
+      inferMedusaPaymentSessionIdFromP24SessionId('p24-custom-session'),
+    ).toBeUndefined()
   })
 })
 

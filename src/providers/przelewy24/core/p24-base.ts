@@ -7,6 +7,7 @@ import {
 } from "@medusajs/types";
 import {
   AbstractPaymentProvider,
+  ContainerRegistrationKeys,
   isDefined,
 } from "@medusajs/framework/utils";
 import {
@@ -30,6 +31,7 @@ import { coerceSandbox } from "../../../utils/coerce-sandbox";
 import {
   getOrderId,
   getSessionId,
+  inferMedusaPaymentSessionIdFromP24SessionId,
   normalizeP24SessionData,
 } from "../../../utils/p24-session-data";
 import {
@@ -220,10 +222,40 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
     return transactionRequest;
   }
 
+  protected resolvePaymentSessionQuery(): PaymentSessionQuery | undefined {
+    const resolve = this.container_.resolve;
+
+    if (typeof resolve !== "function") {
+      return undefined;
+    }
+
+    try {
+      const query = resolve.call(
+        this.container_,
+        ContainerRegistrationKeys.QUERY,
+      ) as PaymentSessionQuery | undefined;
+
+      if (query && typeof query.graph === "function") {
+        return query;
+      }
+    } catch {
+      // Payment provider scope does not register QUERY (e.g. webhook handling).
+    }
+
+    return undefined;
+  }
+
   protected async findMedusaPaymentSessionId(
     p24SessionId: string,
   ): Promise<string> {
-    const query = this.container_.query as PaymentSessionQuery | undefined;
+    const inferred =
+      inferMedusaPaymentSessionIdFromP24SessionId(p24SessionId);
+
+    if (inferred) {
+      return inferred;
+    }
+
+    const query = this.resolvePaymentSessionQuery();
 
     if (!query) {
       return p24SessionId;
