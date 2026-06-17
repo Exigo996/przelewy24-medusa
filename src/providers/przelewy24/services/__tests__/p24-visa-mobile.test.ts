@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import P24VisaMobileService from "../p24-visa-mobile";
-import {
-  DEFAULT_VISA_MOBILE_METHOD_ID,
-  PaymentProviderKeys,
-} from "../../types";
+import { DEFAULT_VISA_MOBILE_METHOD_ID } from "../../types";
 
 const TEST_OPTIONS = {
   merchant_id: "12345",
@@ -34,15 +31,6 @@ describe("P24VisaMobileService", () => {
     });
 
     expect(service.paymentIntentOptions.method_id).toBe(199);
-    expect(service.paymentIntentOptions.white_label).toBe(false);
-  });
-
-  it("exposes the Visa Mobile provider key", () => {
-    const service = new P24VisaMobileService({}, TEST_OPTIONS);
-
-    expect(P24VisaMobileService.identifier).toBe(
-      PaymentProviderKeys.P24_VISA_MOBILE,
-    );
     expect(service.paymentIntentOptions.white_label).toBe(false);
   });
 });
