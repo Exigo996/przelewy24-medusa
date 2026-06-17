@@ -18,15 +18,18 @@ export function extractP24WebhookSourceIp(
     return undefined;
   }
 
-  const cfConnectingIp =
+  const cfConnectingIpRaw =
     headers["cf-connecting-ip"] || headers["CF-Connecting-IP"];
-  if (typeof cfConnectingIp === "string" && cfConnectingIp.length > 0) {
-    return cfConnectingIp.trim();
+  const cfConnectingIp =
+    typeof cfConnectingIpRaw === "string" ? cfConnectingIpRaw.trim() : "";
+  if (cfConnectingIp) {
+    return cfConnectingIp;
   }
 
-  const realIp = headers["x-real-ip"] || headers["X-Real-IP"];
-  if (typeof realIp === "string" && realIp.length > 0) {
-    return realIp.trim();
+  const realIpRaw = headers["x-real-ip"] || headers["X-Real-IP"];
+  const realIp = typeof realIpRaw === "string" ? realIpRaw.trim() : "";
+  if (realIp) {
+    return realIp;
   }
 
   const forwardedFor = headers["x-forwarded-for"] || headers["X-Forwarded-For"];

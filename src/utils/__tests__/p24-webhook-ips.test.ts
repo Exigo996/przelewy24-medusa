@@ -31,6 +31,8 @@ describe("isAllowedP24WebhookSourceIp", () => {
     expect(isAllowedP24WebhookSourceIp("162.158.172.83")).toBe(false);
     expect(isAllowedP24WebhookSourceIp("172.64.200.81")).toBe(false);
     expect(isAllowedP24WebhookSourceIp("203.0.113.1")).toBe(false);
+    expect(isAllowedP24WebhookSourceIp("0xc1.178.213.42")).toBe(false);
+    expect(isAllowedP24WebhookSourceIp("1e2.0.0.1")).toBe(false);
   });
 
   it("allows sandbox localhost only when sandbox is enabled", () => {

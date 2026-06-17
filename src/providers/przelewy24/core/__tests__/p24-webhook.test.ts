@@ -88,6 +88,15 @@ describe("extractP24WebhookSourceIp", () => {
     ).toBe("5.252.202.254");
   });
 
+  it("falls back when cf-connecting-ip is whitespace", () => {
+    expect(
+      extractP24WebhookSourceIp({
+        "cf-connecting-ip": "   ",
+        "x-forwarded-for": "5.252.202.254",
+      }),
+    ).toBe("5.252.202.254");
+  });
+
   it("prefers x-real-ip over x-forwarded-for", () => {
     expect(
       extractP24WebhookSourceIp({
