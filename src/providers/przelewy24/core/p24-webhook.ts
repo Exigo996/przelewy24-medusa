@@ -18,9 +18,18 @@ export function extractP24WebhookSourceIp(
     return undefined;
   }
 
-  const realIp = headers["x-real-ip"] || headers["X-Real-IP"];
-  if (typeof realIp === "string" && realIp.length > 0) {
-    return realIp.trim();
+  const cfConnectingIpRaw =
+    headers["cf-connecting-ip"] || headers["CF-Connecting-IP"];
+  const cfConnectingIp =
+    typeof cfConnectingIpRaw === "string" ? cfConnectingIpRaw.trim() : "";
+  if (cfConnectingIp) {
+    return cfConnectingIp;
+  }
+
+  const realIpRaw = headers["x-real-ip"] || headers["X-Real-IP"];
+  const realIp = typeof realIpRaw === "string" ? realIpRaw.trim() : "";
+  if (realIp) {
+    return realIp;
   }
 
   const forwardedFor = headers["x-forwarded-for"] || headers["X-Forwarded-For"];
@@ -29,7 +38,7 @@ export function extractP24WebhookSourceIp(
       .split(",")
       .map((ip) => ip.trim())
       .filter(Boolean);
-    return ips.length > 0 ? ips[ips.length - 1] : undefined;
+    return ips.length > 0 ? ips[0] : undefined;
   }
 
   return undefined;

@@ -272,11 +272,10 @@ export enum PaymentProviderKeys {
   P24_VISA_MOBILE = "p24-visa-mobile",
 }
 
-export const P24_WEBHOOK_ALLOWED_IPS = [
-  "5.252.202.254",
-  "5.252.202.255",
-  "20.215.81.124",
-] as const;
+export {
+  P24_WEBHOOK_ALLOWED_CIDRS,
+  P24_WEBHOOK_ALLOWED_IPS,
+} from "../../../utils/p24-webhook-ips";
 
 export const DEFAULT_CARD_CHANNEL = 4096;
 export const DEFAULT_BLIK_CHANNEL = 64;

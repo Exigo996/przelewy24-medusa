@@ -17,10 +17,10 @@ import {
   P24VisaMobileChargeData,
   P24VisaMobileChargeResponse,
   P24WebhookPayload,
-  P24_WEBHOOK_ALLOWED_IPS,
 } from "../types";
 import { coerceSandbox } from "../../../utils/coerce-sandbox";
 import { buildLocalizedP24ErrorMessage } from "../../../utils/p24-errors";
+import { isAllowedP24WebhookSourceIp } from "../../../utils/p24-webhook-ips";
 
 export class P24ApiError extends Error {
   readonly responseCode?: number;
@@ -349,22 +349,9 @@ export class P24ApiService {
   }
 
   isAllowedWebhookIp(ipAddress: string | undefined): boolean {
-    if (!ipAddress) {
-      return false;
-    }
-
-    const normalized = ipAddress.trim();
-    if (!normalized) {
-      return false;
-    }
-
-    if (this.options.sandbox && (normalized === "127.0.0.1" || normalized === "::1")) {
-      return true;
-    }
-
-    return P24_WEBHOOK_ALLOWED_IPS.includes(
-      normalized as (typeof P24_WEBHOOK_ALLOWED_IPS)[number],
-    );
+    return isAllowedP24WebhookSourceIp(ipAddress, {
+      sandbox: this.options.sandbox,
+    });
   }
 
   private hashSignaturePayload(payload: Record<string, unknown>): string {

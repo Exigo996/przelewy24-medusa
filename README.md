@@ -329,7 +329,7 @@ See [P24 Card 2.0 docs](https://developers.przelewy24.pl/extended/index.php?pl#t
 
 | Step | Mechanism |
 |------|-----------|
-| Order creation | Storefront polls `complete`; Medusa `authorizePayment` queries P24 API |
+| Order creation | Storefront polls `complete`; Medusa `authorizePayment` queries P24 API; or `complete-captured-carts-backstop` (Medusa, every 2 min) when payment is already captured |
 | Capture + `completed_at` | P24 webhook to `urlStatus`, or `reconcile-p24-payments` job (every 5 min) |
 
 **Do not** add a separate store “confirm” route to replace webhooks. Production capture is webhook-driven.
