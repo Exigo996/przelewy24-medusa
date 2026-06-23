@@ -5,7 +5,11 @@ import {
   PaymentSessionStatus,
 } from "@medusajs/framework/utils";
 import { buildLocalizedP24ErrorMessage } from "../../../../utils/p24-errors";
-import { PaymentProviderKeys } from "../../../../providers/przelewy24/types";
+import {
+  PaymentProviderKeys,
+  P24TransactionBySessionIdResponse,
+  P24VerificationResponse,
+} from "../../../../providers/przelewy24/types";
 
 type ChargeExecutorResult = {
   orderId?: number;
@@ -193,7 +197,22 @@ export async function assertBlikChargeMatchesPaymentSession(
 export type P24TransactionStatusQueryProvider = {
   queryTransactionStatus: (
     sessionId: string,
-  ) => Promise<{ medusaStatus: string; p24Status: number }>;
+  ) => Promise<{
+    medusaStatus: string;
+    p24Status: number;
+    transactionDetails: P24TransactionBySessionIdResponse;
+  }>;
+  /**
+   * Server-side verification of a captured/authorized transaction via P24's
+   * `/transaction/verify` (cryptographic sign). Used by the reconcile job to
+   * avoid capturing payments that were never verified by P24.
+   */
+  verifyTransaction: (
+    sessionId: string,
+    amount: number,
+    currency: string,
+    orderId: number,
+  ) => Promise<P24VerificationResponse>;
 };
 
 function isPaymentProviderKey(value: string): value is PaymentProviderKeys {

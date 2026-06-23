@@ -48,6 +48,7 @@ type P24WebhookDeps = {
   p24Api: P24ApiService;
   logger: ReturnType<typeof createP24Logger>;
   findMedusaPaymentSessionId: (p24SessionId: string) => Promise<string>;
+  hasCapturedPayment: (medusaPaymentSessionId: string) => Promise<boolean>;
   buildError: (message: string, error?: unknown) => Error;
 };
 
@@ -131,11 +132,22 @@ export async function processP24Webhook(
 
     switch (medusaStatus) {
       case "captured":
-      case "authorized":
+      case "authorized": {
+        const alreadyCaptured =
+          await deps.hasCapturedPayment(medusaPaymentSessionId);
+
+        if (alreadyCaptured) {
+          deps.logger.info(
+            `P24 webhook for session ${sessionId} already captured; skipping to avoid duplicate processing`,
+          );
+          return { action: PaymentActions.NOT_SUPPORTED };
+        }
+
         return {
           action: PaymentActions.SUCCESSFUL,
           data: webhookResultData,
         };
+      }
       case "pending":
         return {
           action: PaymentActions.PENDING,

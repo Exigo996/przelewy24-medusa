@@ -34,7 +34,8 @@ const createDeps = (
     verifyTransaction: ReturnType<typeof vi.fn>;
     getTransactionBySessionId: ReturnType<typeof vi.fn>;
     findMedusaPaymentSessionId: ReturnType<typeof vi.fn>;
-  }> = {},
+    hasCapturedPayment: ReturnType<typeof vi.fn>;
+ }> = {},
 ) => {
   const logger = createLogger();
 
@@ -68,6 +69,8 @@ const createDeps = (
     findMedusaPaymentSessionId:
       overrides.findMedusaPaymentSessionId ??
       vi.fn().mockResolvedValue("payses_medusa_1"),
+    hasCapturedPayment:
+      overrides.hasCapturedPayment ?? vi.fn().mockResolvedValue(false),
     buildError: (message: string, error?: unknown) =>
       new Error(
         `${message}: ${
@@ -181,5 +184,17 @@ describe("processP24Webhook", () => {
       "PLN",
       42,
     );
+  });
+
+  it("skips already-captured payments on webhook retry (idempotency guard)", async () => {
+    const deps = createDeps({
+      hasCapturedPayment: vi.fn().mockResolvedValue(true),
+    });
+
+    const result = await processP24Webhook(deps, webhookData);
+
+    expect(result.action).toBe(PaymentActions.NOT_SUPPORTED);
+    expect(deps.hasCapturedPayment).toHaveBeenCalledWith("payses_medusa_1");
+    expect(deps.logger.info).toHaveBeenCalled();
   });
 });

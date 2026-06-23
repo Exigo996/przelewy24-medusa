@@ -15,6 +15,7 @@ import {
   P24PaymentIntentOptions,
   P24Transaction,
   P24TransactionBySessionIdResponse,
+  P24VerificationResponse,
 } from "../types";
 
 import { P24ApiService } from "../services/p24-api";
@@ -69,13 +70,20 @@ import {
 type P24Container = Record<string, unknown> & {
   logger?: Logger;
 };
+type PaymentSessionGraphData = {
+  id: string;
+  data?: Record<string, unknown>;
+  payment_collection?: {
+    payments?: Array<{ id?: string; captured_at?: string | null }>;
+  };
+};
 
 type PaymentSessionQuery = {
   graph: (config: {
     entity: string;
     fields: string[];
     filters?: Record<string, unknown>;
-  }) => Promise<{ data: Array<{ id: string; data?: Record<string, unknown> }> }>;
+  }) => Promise<{ data: PaymentSessionGraphData[] }>;
 };
 
 abstract class P24Base extends AbstractPaymentProvider<P24Options> {
@@ -289,6 +297,41 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
     });
 
     return matched?.id ?? p24SessionId;
+  }
+
+  /**
+   * Whether the Medusa payment for the given session has already been
+   * captured. Mirrors the reconcile job's `hasCapturedPayment` guard so the
+   * webhook handler is idempotent across P24 retries.
+   *
+   * Returns `false` when the query API is unavailable (e.g. webhook provider
+   * scope) so the guard never blocks a legitimate first capture.
+   */
+  protected async hasCapturedPayment(
+    medusaPaymentSessionId: string,
+  ): Promise<boolean> {
+    const query = this.resolvePaymentSessionQuery();
+
+    if (!query) {
+      return false;
+    }
+
+    try {
+      const { data } = await query.graph({
+        entity: "payment_session",
+        fields: [
+          "id",
+          "payment_collection.payments.id",
+          "payment_collection.payments.captured_at",
+        ],
+        filters: { id: medusaPaymentSessionId },
+      });
+
+      const payments = data?.[0]?.payment_collection?.payments ?? [];
+      return payments.some((payment) => Boolean(payment?.captured_at));
+    } catch {
+      return false;
+    }
   }
 
   protected async enrichPaymentMethodFields(
@@ -720,6 +763,8 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
         logger: this.logger_,
         findMedusaPaymentSessionId: (p24SessionId) =>
           this.findMedusaPaymentSessionId(p24SessionId),
+        hasCapturedPayment: (medusaPaymentSessionId) =>
+          this.hasCapturedPayment(medusaPaymentSessionId),
         buildError: (message, error) => this.buildError(message, error),
       },
       webhookData,
@@ -752,6 +797,21 @@ abstract class P24Base extends AbstractPaymentProvider<P24Options> {
 
   async queryTransactionStatus(sessionId: string) {
     return this.getTransactionDetailsAndStatus(sessionId);
+  }
+
+  /**
+   * Public server-side verification via P24's `/transaction/verify`
+   * (cryptographic sign). Exposed so the reconcile job can verify a
+   * captured/authorized transaction before capturing it in Medusa, rather
+   * than trusting the cart amount.
+   */
+  async verifyTransaction(
+    sessionId: string,
+    amount: number,
+    currency: string,
+    orderId: number,
+  ): Promise<P24VerificationResponse> {
+    return this.p24Api.verifyTransaction(sessionId, amount, currency, orderId);
   }
 
   protected async getTransactionDetailsAndStatus(sessionId: string): Promise<{

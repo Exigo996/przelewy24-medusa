@@ -92,7 +92,8 @@ export default async function reconcileP24PaymentsJob(
         providerId,
       )
 
-      const { medusaStatus } = await provider.queryTransactionStatus(p24SessionId)
+      const { medusaStatus, transactionDetails } =
+        await provider.queryTransactionStatus(p24SessionId)
 
       if (medusaStatus !== 'captured' && medusaStatus !== 'authorized') {
         continue
@@ -107,12 +108,36 @@ export default async function reconcileP24PaymentsJob(
         continue
       }
 
+      const p24Amount = transactionDetails.data.amount
+      const p24Currency = transactionDetails.data.currency
+      const p24OrderId = transactionDetails.data.orderId
+
+      // Verify the transaction server-side via P24's cryptographic
+      // `/transaction/verify` before capturing, and use the P24-verified
+      // amount instead of the (cart-sourced) `session.amount`.
+      const verification = await provider.verifyTransaction(
+        p24SessionId,
+        p24Amount,
+        p24Currency,
+        p24OrderId,
+      )
+
+      if (
+        verification.responseCode !== 0 ||
+        verification.data.status !== 'success'
+      ) {
+        logger.warn(
+          `[p24-reconcile] Skipping session ${session.id}: P24 verification failed (responseCode: ${verification.responseCode}, status: ${verification.data.status})`,
+        )
+        continue
+      }
+
       await processPaymentWorkflow(container).run({
         input: {
           action: PaymentActions.SUCCESSFUL,
           data: {
             session_id: session.id,
-            amount: session.amount,
+            amount: p24Amount,
           },
         },
       })
