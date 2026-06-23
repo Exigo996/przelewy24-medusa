@@ -1,4 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { z } from "zod";
 
 import P24CardsService from "../../../../../providers/przelewy24/services/p24-cards";
@@ -50,14 +51,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     return res.status(200).json(intent);
   } catch (error) {
+    const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER);
     const message =
-      error instanceof Error
-        ? error.message
-        : "Failed to create card tokenization intent";
+      error instanceof Error ? error.message : "Unknown error";
 
-    return res.status(400).json({
+    logger.error(`[p24-card-tokenization-intent] ${message}`);
+
+    return res.status(500).json({
       error: "Card tokenization intent failed",
-      message,
+      message: "Failed to create card tokenization intent",
     });
   }
 }
