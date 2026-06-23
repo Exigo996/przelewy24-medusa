@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto";
+
 import {
   InitiatePaymentInput,
   InitiatePaymentOutput,
@@ -85,6 +87,10 @@ class P24CardsService extends P24Base {
         id: p24SessionId,
         data: normalizeP24SessionData({
           session_id: p24SessionId,
+          // Persist the P24 session id so the later transaction/register
+          // (POST /card/charge) reuses the exact session the widget tokenized
+          // against, regardless of the Medusa payment session idempotency key.
+          p24_session_id: p24SessionId,
           medusa_payment_session_id: sessionId,
           merchant_id: parseInt(this.options_.merchant_id),
           card_tokenization_sign: tokenizationSign,
@@ -150,6 +156,35 @@ class P24CardsService extends P24Base {
           ? initiated.data.session_id
           : initiated.id,
       sessionData: initiated.data,
+    };
+  }
+
+  /**
+   * Build the data needed to render the P24 card tokenization iframe WITHOUT
+   * creating a payment session or P24 transaction.
+   *
+   * The tokenization signature only depends on `merchantId + sessionId + crc`
+   * (not the amount), so this is a pure, side-effect-free computation. The
+   * returned `session_id` must later be passed back (as `p24_session_id`) when
+   * the payment session is created so `transaction/register` reuses the same
+   * P24 session the widget tokenized against.
+   */
+  createCardTokenizationIntent({
+    amount,
+    currency_code,
+  }: {
+    amount: number;
+    currency_code: string;
+  }) {
+    const sessionId = randomUUID();
+
+    return {
+      merchant_id: parseInt(this.options_.merchant_id),
+      session_id: sessionId,
+      card_tokenization_sign:
+        this.p24Api.generateCardTokenizationSign(sessionId),
+      amount_grosze: getSmallestUnit(Number(amount), currency_code),
+      currency_code,
     };
   }
 
