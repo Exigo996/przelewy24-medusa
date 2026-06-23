@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+### Added
+- `POST /store/payments/card/tokenization-intent` — side-effect-free endpoint returning `merchant_id`, `session_id`, `card_tokenization_sign`, `amount_grosze`, `currency_code` so the storefront can render the card iframe before any payment session/collection exists (used by order-change settlement to avoid confirming an order change on method select)
+
+### Changed
+- Card tokenization session now persists `p24_session_id`, guaranteeing `POST /store/payments/card/charge` registers against the exact P24 session the widget tokenized against
+
 ## 0.1.2
 
 ### Changed
