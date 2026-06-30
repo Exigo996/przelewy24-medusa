@@ -22,7 +22,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const validationResult = cardRegisterSchema.safeParse(req.body);
 
   if (!validationResult.success) {
-    const errors = validationResult.error.errors.map(
+    const errors = validationResult.error.issues.map(
       (err) => `${err.path.join(".")}: ${err.message}`,
     );
 

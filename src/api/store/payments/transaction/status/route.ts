@@ -20,7 +20,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!validationResult.success) {
     return res.status(400).json({
       error: "Validation failed",
-      details: validationResult.error.errors.map(
+      details: validationResult.error.issues.map(
         (err) => `${err.path.join(".")}: ${err.message}`,
       ),
     });
